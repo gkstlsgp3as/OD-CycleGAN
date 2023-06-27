@@ -1,0 +1,12 @@
+# sentinel-1 Dataset
+
+# train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
+train: ./data/org/sentinel/float/train.txt  # 2978 images
+valid: ./data/org/sentinel/float/valid.txt  # 235 images
+test: ./data/org/sentinel/float/test.txt  # 235 images
+
+# number of classes
+nc: 3
+
+# class names
+names: [ 'trn', 'veh', 'ped']
