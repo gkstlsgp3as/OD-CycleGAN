@@ -253,7 +253,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     if opt.sync_bn and cuda and rank != -1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         logger.info('Using SyncBatchNorm()')
-
+    
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
@@ -360,11 +360,12 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             #imgs, targets, paths, _ = next(iter(dataloader))
             #i, (imgs, targets, paths, _) = next(iter(pbar))
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+            imgs = imgs.to(device, non_blocking=True).float()# / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -421,8 +422,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     
                     plot_model = polygon_plot_images if polygon else plot_images
-                    
-                    Thread(target=plot_model, args=(imgs, targets, colors, paths, f), daemon=True).start()
+                    plot_model(imgs, targets, colors, paths, f)
+                    #Thread(target=plot_model, args=(imgs, targets, colors, paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph

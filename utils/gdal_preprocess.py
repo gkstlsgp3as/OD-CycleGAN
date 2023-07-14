@@ -12,7 +12,7 @@ def landmask(tif_name):
     from PIL import Image
     
     ras_ds = gdal.Open(tif_name, gdal.GA_ReadOnly)
-    gt =ras_ds.GetGeoTransform()
+    gt = ras_ds.GetGeoTransform()
 
     vecPath = "/data/BRIDGE/yolo-rotate/landmask/"
     vec_ds = ogr.Open(vecPath)
@@ -270,7 +270,7 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         #min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
                         #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
-                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()):# (max_x - min_x) * (max_y - min_y) >= 3.0 and 
+                        if (max_x - min_x) * (max_y - min_y) >= 3.0: # not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()):
                             # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
                             dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
@@ -433,189 +433,6 @@ def division_testset(input_band=None, img_size=640):
     return img_list, div_coord    
        
 # band 1 ~ 3을 0 ~ 255 값을 갖는 rgb로 변환
-def band_to_rgb(tif_path,bandnumber,partest=False):
-    from utils.cfg import Cfg
-    import numpy as np
-    from sklearn import preprocessing
-
-    raster = gdal.Open(tif_path)
-
-    # transformation of 3-banded SAR image
-    if bandnumber==3:
-        bands = []
-        for i in range(raster.RasterCount):
-            band = raster.GetRasterBand(i+1)
-            meta = band.GetMetadata()
-            if band.GetMinimum() is None or band.GetMaximum()is None:
-                band.ComputeStatistics(0)
-
-            band_data = np.array(raster.GetRasterBand(i+1).ReadAsArray())
-
-            if i == 0:
-                # band 1의 최대값을 0.1로
-                max_num = Cfg.max[0]
-                min_num = Cfg.min[0]
-
-            elif i == 1:
-                # band 2의 최대값을 0.5로
-                max_num = Cfg.max[1]
-                min_num = Cfg.min[1]
-
-            else:
-                # band 3의 최대값을 1.0으로
-                max_num = Cfg.max[2]
-                min_num = Cfg.min[2]
-
-                # GRDH DPIVD measurement
-                if partest == True:
-
-                    DoP=np.divide(Svh,Svv)
-                    p1=np.divide(Svv,Svh+Svv)
-                    SEiN=10*np.multiply(Svh,Svv)
-                    #SEiN2=preprocessing.normalize(np.power(SEiN,2))
-
-                    #band_data=np.multiply(DoP,np.multiply(p1,SEiN2))
-                    band_data = np.multiply(DoP, np.multiply(p1, SEiN))
-                    #band_data = band_data + 30
-
-                    # Remove the data as 0 where infinite, NaN or negative
-                    band_data[np.isinf(band_data)]=0
-                    band_data[np.where(band_data<0)]=0
-                    band_data[np.isnan(band_data)] = 0
-
-
-                    #band_data=10*np.log10(band_data)
-
-                    max_num = np.quantile(band_data,0.98)
-                    min_num = 0
-                    #min_num = np.quantile(band_data,0.05)
-
-                    #print(np.max(band_data))
-
-
-            # 0 ~ 255 이미지로 변환
-            if partest == True:
-                if i == 0:
-                    Svh = band_data
-                elif i == 1:
-                    Svv = band_data
-
-            band_data[band_data > max_num] = max_num
-            band_data[band_data < min_num] = min_num
-            band_data = band_data * (255./max_num)
-            #band_data = band_data * ((255 - min_num)/ (max_num - min_num))
-
-            bands.append(band_data)
-
-         # band 1, 2, 3을 RGB로 변환
-        rgb = np.dstack((bands[2], bands[1], bands[0]))
-        #rgb = np.array(rgb, np.uint8) # int로 변환
-
-    # transformation of single-banded SAR image
-    elif bandnumber==1:
-        max_num = Cfg.max[0]
-        min_num = Cfg.min[0]
-
-        band_data1 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data1, 0.9, axis=None)
-        # band_data1=band_data1/0.8191
-        band_data1[band_data1 > max_num] = max_num
-        band_data1[band_data1 < min_num] = min_num
-        band_data1 = band_data1 * (255. / max_num)
-
-        rgb = np.zeros((band_data1.shape[0], band_data1.shape[1], 3))
-        rgb[:, :, 0] = band_data1
-
-        # For Band2(Min/Max)
-        max_num = Cfg.max[1]
-        min_num = Cfg.min[1]
-
-        band_data2 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data2, 0.9, axis=None)
-        # band_data2 = band_data2 / 0.8191
-        band_data2[band_data2 > max_num] = max_num
-        band_data2[band_data2 < min_num] = min_num
-        band_data2 = band_data2 * (255. / max_num)
-
-        rgb[:, :, 1] = band_data2
-
-        # For Band3(Min/Max)
-        max_num = Cfg.max[2]
-        min_num = Cfg.min[2]
-
-        band_data3 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data3, 0.9, axis=None)
-        # band_data3 = band_data3 / 0.8191
-        band_data3[band_data3 > max_num] = max_num
-        band_data3[band_data3 < min_num] = min_num
-        band_data3 = band_data3 * (255. / max_num)
-
-        rgb[:, :, 2] = band_data3
-
-        #rgb = np.array(rgb, np.uint8)
-
-
-    # transformation of double-banded SAR image(B1,B2,B2)
-    elif bandnumber==2:
-        max_num = Cfg.max[0]
-        min_num = Cfg.min[0]
-
-        band_data1 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data1, 0.9, axis=None)
-        # band_data1=band_data1/0.8191
-        band_data1[band_data1 > max_num] = max_num
-        band_data1[band_data1 < min_num] = min_num
-        band_data1 = band_data1 * ((255 - min_num) / (max_num - min_num))
-
-        rgb = np.zeros((band_data1.shape[0], band_data1.shape[1], 3))
-        rgb[:, :, 0] = band_data1
-
-        # For Band2(Min/Max)
-        max_num = Cfg.max[1]
-        min_num = Cfg.min[1]
-
-        band_data2 = np.array(raster.GetRasterBand(2).ReadAsArray())
-        # max_num = np.quantile(band_data2, 0.9, axis=None)
-        # band_data2 = band_data2 / 0.8191
-        band_data2[band_data2 > max_num] = max_num
-        band_data2[band_data2 < min_num] = min_num
-        band_data2 = band_data2 * ((255 - min_num) / (max_num - min_num))
-
-        rgb[:, :, 1] = band_data2
-
-        # For Band3(Min/Max)
-        max_num = Cfg.max[2]
-        min_num = Cfg.min[2]
-
-        band_data3 = np.array(raster.GetRasterBand(2).ReadAsArray())
-        # max_num = np.quantile(band_data3, 0.9, axis=None)
-        # band_data3 = band_data3 / 0.8191
-        band_data3[band_data3 > max_num] = max_num
-        band_data3[band_data3 < min_num] = min_num
-        band_data3 = band_data3 * ((255 - min_num)/(max_num - min_num))
-
-
-        rgb[:, :, 2] = band_data3
-
-        #rgb = np.array(rgb, np.uint8)
-    elif bandnumber > 3:
-        for bn in range(bandnumber):
-            max_num = Cfg.max[bn]
-            min_num = Cfg.min[bn]
-
-            band_data = np.array(raster.GetRasterBand(bn+1).ReadAsArray())
-            # max_num = np.quantile(band_data1, 0.9, axis=None)
-            # band_data1=band_data1/0.8191
-            band_data[band_data1 > max_num] = max_num
-            band_data[band_data1 < min_num] = min_num
-            band_data = band_data * ((255 - min_num) / (max_num - min_num))
-
-            rgb = np.zeros((band_data.shape[0], band_data.shape[1], bandnumber))
-            rgb[:, :, bn] = band_data
-
-    return rgb
-
-# band 1 ~ 3을 0 ~ 255 값을 갖는 rgb로 변환
 def band_to_input(tif_path,bandnumber,partest=False):
     from utils.cfg import Cfg
     import numpy as np
@@ -634,58 +451,16 @@ def band_to_input(tif_path,bandnumber,partest=False):
 
             band_data = np.array(raster.GetRasterBand(i+1).ReadAsArray())
 
-            if i == 0:
-                # band 1의 최대값을 0.1로
-                max_num = Cfg.max[0]
-                min_num = Cfg.min[0]
+            max_num = Cfg.max[i]
+            min_num = Cfg.min[i]
 
-            elif i == 1:
-                # band 2의 최대값을 0.5로
-                max_num = Cfg.max[1]
-                min_num = Cfg.min[1]
-
-            else:
-                # band 3의 최대값을 1.0으로
-                max_num = Cfg.max[2]
-                min_num = Cfg.min[2]
-
-                # GRDH DPIVD measurement
-                if partest == True:
-
-                    DoP=np.divide(Svh,Svv)
-                    p1=np.divide(Svv,Svh+Svv)
-                    SEiN=10*np.multiply(Svh,Svv)
-                    #SEiN2=preprocessing.normalize(np.power(SEiN,2))
-
-                    #band_data=np.multiply(DoP,np.multiply(p1,SEiN2))
-                    band_data = np.multiply(DoP, np.multiply(p1, SEiN))
-                    #band_data = band_data + 30
-
-                    # Remove the data as 0 where infinite, NaN or negative
-                    band_data[np.isinf(band_data)]=0
-                    band_data[np.where(band_data<0)]=0
-                    band_data[np.isnan(band_data)] = 0
-
-
-                    #band_data=10*np.log10(band_data)
-
-                    max_num = np.quantile(band_data,0.98)
-                    min_num = 0
-                    #min_num = np.quantile(band_data,0.05)
-
-                    #print(np.max(band_data))
-
-
-            # 0 ~ 255 이미지로 변환
-            if partest == True:
-                if i == 0:
-                    Svh = band_data
-                elif i == 1:
-                    Svv = band_data
-
+            # fill nan with neighbors
+            mask = np.isnan(band_data)
+            band_data[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), band_data[~mask])
             band_data[band_data > max_num] = max_num
             band_data[band_data < min_num] = min_num
-            band_data = band_data * (255./max_num)
+
+            band_data = band_data * ((1 - min_num) / (max_num - min_num))
             #band_data = band_data * ((255 - min_num)/ (max_num - min_num))
 
             bands.append(band_data)
@@ -703,36 +478,11 @@ def band_to_input(tif_path,bandnumber,partest=False):
         # band_data1=band_data1/0.8191
         band_data1[band_data1 > max_num] = max_num
         band_data1[band_data1 < min_num] = min_num
-        band_data1 = band_data1 * (255. / max_num)
+        band_data1 = band_data1 * ((1 - min_num) / (max_num - min_num))
 
         rgb = np.zeros((band_data1.shape[0], band_data1.shape[1], 3))
-        rgb[:, :, 0] = band_data1
-
-        # For Band2(Min/Max)
-        max_num = Cfg.max[1]
-        min_num = Cfg.min[1]
-
-        band_data2 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data2, 0.9, axis=None)
-        # band_data2 = band_data2 / 0.8191
-        band_data2[band_data2 > max_num] = max_num
-        band_data2[band_data2 < min_num] = min_num
-        band_data2 = band_data2 * (255. / max_num)
-
-        rgb[:, :, 1] = band_data2
-
-        # For Band3(Min/Max)
-        max_num = Cfg.max[2]
-        min_num = Cfg.min[2]
-
-        band_data3 = np.array(raster.GetRasterBand(1).ReadAsArray())
-        # max_num = np.quantile(band_data3, 0.9, axis=None)
-        # band_data3 = band_data3 / 0.8191
-        band_data3[band_data3 > max_num] = max_num
-        band_data3[band_data3 < min_num] = min_num
-        band_data3 = band_data3 * (255. / max_num)
-
-        rgb[:, :, 2] = band_data3
+        rgb = np.dstack((band_data1, band_data1, band_data1))
+        #rgb = np.array(rgb, np.uint8)
 
     # transformation of double-banded SAR image(B1,B2,B2)
     elif bandnumber==2:
@@ -744,7 +494,7 @@ def band_to_input(tif_path,bandnumber,partest=False):
         # band_data1=band_data1/0.8191
         band_data1[band_data1 > max_num] = max_num
         band_data1[band_data1 < min_num] = min_num
-        band_data1 = band_data1 * ((255 - min_num) / (max_num - min_num))
+        band_data1 = band_data1 * ((1 - min_num) / (max_num - min_num))
 
         rgb = np.zeros((band_data1.shape[0], band_data1.shape[1], 3))
         rgb[:, :, 0] = band_data1
@@ -758,23 +508,10 @@ def band_to_input(tif_path,bandnumber,partest=False):
         # band_data2 = band_data2 / 0.8191
         band_data2[band_data2 > max_num] = max_num
         band_data2[band_data2 < min_num] = min_num
-        band_data2 = band_data2 * ((255 - min_num) / (max_num - min_num))
+        band_data2 = band_data2 * ((1 - min_num) / (max_num - min_num))
 
         rgb[:, :, 1] = band_data2
-
-        # For Band3(Min/Max)
-        max_num = Cfg.max[2]
-        min_num = Cfg.min[2]
-
-        band_data3 = np.array(raster.GetRasterBand(2).ReadAsArray())
-        # max_num = np.quantile(band_data3, 0.9, axis=None)
-        # band_data3 = band_data3 / 0.8191
-        band_data3[band_data3 > max_num] = max_num
-        band_data3[band_data3 < min_num] = min_num
-        band_data3 = band_data3 * ((255 - min_num)/(max_num - min_num))
-
-
-        rgb[:, :, 2] = band_data3
+        rgb[:, :, 2] = band_data2
 
     elif bandnumber > 3:
         for bn in range(bandnumber):
@@ -784,9 +521,8 @@ def band_to_input(tif_path,bandnumber,partest=False):
             band_data = np.array(raster.GetRasterBand(bn+1).ReadAsArray())
             # max_num = np.quantile(band_data1, 0.9, axis=None)
             # band_data1=band_data1/0.8191
-            band_data[band_data1 > max_num] = max_num
-            band_data[band_data1 < min_num] = min_num
-            band_data = band_data * ((255 - min_num) / (max_num - min_num))
+            band_data.clip(min_num, max_num)
+            band_data = band_data * ((1 - min_num) / (max_num - min_num))
 
             rgb = np.zeros((band_data.shape[0], band_data.shape[1], bandnumber))
             rgb[:, :, bn] = band_data
@@ -813,7 +549,7 @@ def line_detection(input_array):
 
     # threshhold
     thr = 15
-    ret, thresh = cv2.threshold(erode_image, thr, 255, 0)
+    ret, thresh = cv2.threshold(erode_image, thr, 1, 0)
     # Image.fromarray(thresh).save('./milestone/line/thres_'+save_name.replace('tif','png'))
 
     # 육지 정보를 저장할 이미지

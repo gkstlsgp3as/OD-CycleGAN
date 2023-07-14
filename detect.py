@@ -114,15 +114,16 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
     ScaleCoords = polygon_scale_coords
 
     t0 = time.time()
-    for path, rgb_band, div_img_list, div_coord, shapes, projection, geotransform in dataset:  
+    for path, input_band, div_img_list, div_coord, shapes, projection, geotransform in dataset:  
         # 테스트 이미지를 1/div_num 만큼 width, height를 분할하고, 크롭된 이미지와 위치좌표를 반환
         p = Path(path)
+        
         with open(save_dir / (p.stem + '_' + opt.name + '.txt'), 'w') as f:
             if opt.polygon:
-                f.write('image,Lon,Lat,Class,Size,X1,Y1,X2,Y2,X3,Y3,X4,Y4\n')
+                f.write('ImageName,Lon,Lat,Class,Size,X1,Y1,X2,Y2,X3,Y3,X4,Y4\n')
             else:
-                f.write('image,Lon,Lat,Class,Size,X,Y,W,H\n')
-        b1_image = np.dstack((rgb_band[:,:,1], rgb_band[:,:,1], rgb_band[:,:,1]))
+                f.write('ImageName,Lon,Lat,Class,Size,X,Y,W,H\n')
+        b1_image = np.dstack((input_band[:,:,1], input_band[:,:,1], input_band[:,:,1]))
         SLC = True if p.stem.split('_')[2] == 'SLC' else False
         if not SLC:
             xoff, ca, cb, yoff, cd, ce = geotransform
@@ -137,7 +138,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                             
             img = torch.from_numpy(img).to(device)
             img = img.half() if half else img.float()  # uint8 to fp16/32
-            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            #img /= 255.0  # 0 - 255 to 0.0 - 1.0
             if img.ndimension() == 3:
                 img = img.unsqueeze(0)
     
@@ -203,25 +204,26 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                     with open(save_dir / (p.stem + '_' + opt.name + '.txt'), 'a') as f:
                         if opt.polygon:
                             if not SLC:
-                                line = (path.split('/')[-1][:-4], lon, lat, cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
-                                    else (path.split('/')[-1][:-4], lon, lat, cls, Cfg.size, *xyxyxyxy)
+                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
+                                    else (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + '%d,'*2 % line[3:5] + \
                                         '%.14g,'*(len(line)-5) % line[5:])[:-1]+'\n')
                             else:
-                                line = (path.split('/')[-1][:-4], cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
-                                    else (path.split('/')[-1][:-4], cls, Cfg.size, *xyxyxyxy)     
+                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
+                                    else (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *xyxyxyxy)     
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + \
                                         '%.14g,'*(len(line)-3) % line[3:])[:-1]+'\n')                               
                             
                         else:
                             coord_xy = [x1, y1, x2-x1, y2-y1]
                             if not SLC:
-                                line = (path.split('/')[-1][:-4], lon, lat, cls, Cfg.size, *coord_xy, conf) if save_conf \
+                                
+                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *coord_xy, conf) if save_conf \
                                     else (path.split('/')[-1][:-4], lon, lat, cls, Cfg.size, *coord_xy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + '%d,'*2 % line[3:5] + \
                                         '%.14g,'*(len(line)-5) % line[5:])[:-1]+'\n')
                             else:
-                                line = (path.split('/')[-1][:-4], cls, Cfg.size, *coord_xy, conf) if save_conf \
+                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *coord_xy, conf) if save_conf \
                                     else (path.split('/')[-1][:-4], cls, Cfg.size, *coord_xy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + \
                                         '%.14g,'*(len(line)-3) % line[3:])[:-1]+'\n')
@@ -250,15 +252,15 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
         if save_img or view_img:
             from osgeo import gdal 
             import zipfile
-            from tifffile import imwrite
+            #from tifffile import imwrite
 
+            
             save_path = str(save_dir / Path(path).name.replace('.tif', '_' + opt.name + '.tif'))
-        
             print(f" The image with the result is saved in: {save_path}")
             
-            #b1_image = np.array(b1_image, dtype=np.uint8)
-            #cv2.imwrite(save_path, b1_image)   # find what to plot   
-            imwrite(save_path, b1_image)
+            b1_image = np.array(b1_image*255, dtype=np.uint8)
+            cv2.imwrite(save_path, b1_image)   # find what to plot   
+            #imwrite(save_path, b1_image)
             
             if not SLC: # slc는 geotransform 안함. 
                 outfile = gdal.Open(save_path, gdal.GA_Update) 

@@ -573,7 +573,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             #img, labels = self.albumentations(img, labels)
 
             # Augment colorspace
-            img = augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+            #img = augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
             # Apply cutouts
             # if random.random() < 0.9:
             #     labels = cutout(img, labels)
@@ -589,7 +589,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             #        if len(sample_labels) == 0:
             #            break
             #    labels = pastein(img, labels, sample_labels, sample_images, sample_masks)
-
+        
         nl = len(labels)  # number of labels
         if nl:
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
@@ -706,7 +706,7 @@ def load_mosaic(self, index):
 
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -761,7 +761,7 @@ def load_mosaic9(self, index):
 
         # place img in img9
         if i == 0:  # center
-            img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            img9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
             h0, w0 = h, w
             c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
@@ -1060,7 +1060,6 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
             else:
                 img, labels = polygon_load_mosaic9(self, index)
             shapes = None
-
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 if random.random() < 0.8:
@@ -1092,7 +1091,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                                                          shear=hyp['shear'],
                                                          perspective=hyp['perspective'])
             # Augment colorspace
-            img = augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+            #img = augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
             # Polygon does not support cutouts
         nL = len(labels)  # number of labels
         if nL:
@@ -1102,13 +1101,11 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # albumentation
             img = self.albumentations(img)
-            
             # flip up-down for all y
             if random.random() < hyp['flipud']:
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2::2] = 1 - labels[:, 2::2]
-
             # flip left-right for all x
             if random.random() < hyp['fliplr']:
                 img = np.fliplr(img)
@@ -1134,7 +1131,6 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
     
 def polygon_load_mosaic(self, index):
     # loads images in a 4-mosaic, with polygon boxes
-
     labels4, segments4 = [], []
     s = self.img_size
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
@@ -1145,7 +1141,7 @@ def polygon_load_mosaic(self, index):
 
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -1200,7 +1196,7 @@ def polygon_load_mosaic9(self, index):
 
         # place img in img9
         if i == 0:  # center
-            img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            img9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
             h0, w0 = h, w
             c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
@@ -1361,7 +1357,7 @@ class Albumentations:
         return im
 
 # Ancillary functions --------------------------------------------------------------------------------------------------------------------
-def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
+def letterbox(img, new_shape=(640, 640), color=(0.45, 0.45, 0.45), auto=True, scaleFill=False, scaleup=True, stride=32):
     # for rectangular inference, pad with gray(RGB: 114,114,114) pixels
     # Resize and pad image while meeting stride-multiple constraints
     shape = img.shape[:2]  # current shape [height, width]
@@ -1434,9 +1430,9 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
 
     # Visualize
     # import matplotlib.pyplot as plt
@@ -1587,9 +1583,9 @@ def polygon_random_perspective(img, targets=(), segments=(), degrees=10, transla
             
             if (border[0] != 0) or (border[1] != 0) or (M2 != np.eye(3)).any():  # image changed
                 if perspective:
-                    img = cv2.warpPerspective(img, M2, dsize=(width, height), borderValue=(114, 114, 114))
+                    img = cv2.warpPerspective(img, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 else:  # affine
-                    img = cv2.warpAffine(img, M2[:2], dsize=(width, height), borderValue=(114, 114, 114))
+                    img = cv2.warpAffine(img, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 image_transformed = True
                 new = np.zeros((n, 8))
                 xy = np.ones((n * 4, 3))
@@ -1615,9 +1611,9 @@ def polygon_random_perspective(img, targets=(), segments=(), degrees=10, transla
         M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
         if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
             if perspective:
-                img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+                img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             else:  # affine
-                img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+                img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             image_transformed = True
         
     return img, targets
