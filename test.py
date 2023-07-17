@@ -155,7 +155,7 @@ def test(data,
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True) # [batch, channel, img_shape] e.g. [32, 3, 576, 1056]
         img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        #img /= 255.0  # 0 - 255 to 0.0 - 1.0
         targets = targets.to(device) # cls, confg, xyxyxyxy -> 10 => [label_num, 10]
         nb, _, height, width = img.shape  # batch size, channels, height, width
                 

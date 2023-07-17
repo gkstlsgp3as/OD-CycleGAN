@@ -696,11 +696,8 @@ def polygon_plot_images(images, targets, colors, paths=None, fname='images.jpg',
         targets = targets.cpu().numpy()
     
     # un-normalise
-    
-    print(np.max(images[0]))
     if np.max(images[0]) <= 1:
         images *= 255
-    print(np.max(images[0]))
     tl = 3  # line thickness
     tf = max(tl - 1, 1)  # font thickness
     bs, _, h, w = images.shape  # batch size, _, height, width
@@ -724,7 +721,7 @@ def polygon_plot_images(images, targets, colors, paths=None, fname='images.jpg',
         img = img.transpose(1, 2, 0)
         if scale_factor < 1:
             img = cv2.resize(img, (w, h))
-            
+
         mosaic[block_y:block_y + h, block_x:block_x + w, :] = np.dstack((img[:,:,1], img[:,:,1], img[:,:,1]))
         if len(targets) > 0:
             image_targets = targets[targets[:, 0] == i]

@@ -19,7 +19,7 @@ from utils.plots import Annotator, set_colors
 @torch.no_grad()
 def detect(weights='yolov7.pt',  # model.pt path(s)
            source='data/images',  # file/dir/URL/glob, 0 for webcam
-           imgsz=640,  # inference size (pixels)
+           img_size=640,  # inference size (pixels)
            conf_thres=0.25,  # confidence threshold
            iou_thres=0.45,  # NMS IOU threshold
            max_det=1000,  # maximum detections per image
@@ -61,12 +61,12 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
     # Load model
     model = attempt_load(weights, map_location=device)  # load FP32 model
     stride = int(model.stride.max())  # model stride
-    imgsz = check_img_size(imgsz, s=stride)  # check img_size
-    if imgsz == -1:
+    img_size = check_img_size(img_size, s=stride)  # check img_size
+    if img_size == -1:
         quit()
 
     if trace:
-        model = TracedModel(model, device, opt.imgsz)
+        model = TracedModel(model, device, opt.img_size)
         # https://happy-jihye.github.io/dl/torch-2/
 
     if half:
@@ -84,9 +84,9 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
     image_ext = np.unique(np.array([x.split('.')[-1].lower() for x in files if x.split('.')[-1].lower() in img_formats]))
 
     if image_ext in ['tif', 'tiff']:
-        dataset = LoadSAR(source, img_size=imgsz, stride=stride, save_dir=save_dir)
+        dataset = LoadSAR(source, img_size=img_size, stride=stride, save_dir=save_dir)
     elif image_ext in ['jpg', 'jpeg', 'png']:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, img_size=img_size, stride=stride)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -94,8 +94,8 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
 
     # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-    old_img_w = old_img_h = imgsz
+        model(torch.zeros(1, 3, img_size, img_size).to(device).type_as(next(model.parameters())))  # run once
+    old_img_w = old_img_h = img_size
     old_img_b = 3
 
     # Import utilities 
@@ -123,7 +123,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                 f.write('ImageName,Lon,Lat,Class,Size,X1,Y1,X2,Y2,X3,Y3,X4,Y4\n')
             else:
                 f.write('ImageName,Lon,Lat,Class,Size,X,Y,W,H\n')
-        b1_image = np.dstack((input_band[:,:,1], input_band[:,:,1], input_band[:,:,1]))
+        b1_image = np.dstack((input_band[:,:,1]*255, input_band[:,:,1]*255, input_band[:,:,1]*255))
         SLC = True if p.stem.split('_')[2] == 'SLC' else False
         if not SLC:
             xoff, ca, cb, yoff, cd, ce = geotransform
@@ -131,14 +131,16 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
         for d_id, img0 in enumerate(div_img_list):
             # 원본 이미지 좌표로 변환하기 위해 분활 좌표를 저장
             div_x, div_y = div_coord[d_id][0], div_coord[d_id][1]
-            img = letterbox(img0, imgsz, stride=Cfg.stride)[0]
+            img = letterbox(img0, img_size, stride=Cfg.stride)[0]
             # Convert
+            
             img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416; already applied
             img = np.ascontiguousarray(img)
                             
             img = torch.from_numpy(img).to(device)
             img = img.half() if half else img.float()  # uint8 to fp16/32
             #img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            
             if img.ndimension() == 3:
                 img = img.unsqueeze(0)
     
@@ -258,7 +260,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
             save_path = str(save_dir / Path(path).name.replace('.tif', '_' + opt.name + '.tif'))
             print(f" The image with the result is saved in: {save_path}")
             
-            b1_image = np.array(b1_image*255, dtype=np.uint8)
+            b1_image = np.array(b1_image, dtype=np.uint8)
             cv2.imwrite(save_path, b1_image)   # find what to plot   
             #imwrite(save_path, b1_image)
             
@@ -288,7 +290,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='poly_yolo.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='./inference/images', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--imgsz', type=int, default=640, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.01, help='IOU threshold for NMS')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
