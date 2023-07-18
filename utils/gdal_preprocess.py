@@ -199,7 +199,7 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
     from utils.gdal_preprocess import line_detection
     import random
     
-    print("Start dividing images\n\n")
+    print("Start dividing images for polygon\n\n")
     for i in image_list:
         last_name = i.split('_')[-1]
         image_path = os.path.join(origin_image_folder, i)
@@ -232,7 +232,8 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
         minTh = np.mean(rgb_image[rgb_image>Cfg.minTh])
         #maxTh = np.mean(rgb_image[rgb_image>Cfg.maxTh])
 
-        land_mask = landmask(image_path)       
+        land_mask = landmask(image_path)     
+        nl = 0  
         
         for h_id, div_h in enumerate(hd[:-1]):
             for w_id, div_w in enumerate(wd[:-1]):
@@ -264,13 +265,14 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                     
                     if (x1 <= min_x <= x2) and (x1 <= max_x <= x2) and \
                         (y1 <= min_y <= y2) and (y1 <= max_y <= y2):
+
                         #b[:8] = np.multiply(b[:8],2)
-                        #bb_bias = [-2, -2, +2, -2, +2, +2, -2, +2] # need to revise; invalid bboxes found 
-                        #b[:8] = np.add(b[:8], bb_bias)
-                        #min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
-                        #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
+                        bb_bias = [-0.5, -0.5, +0.5, -0.5, +0.5, +0.5, -0.5, +0.5] # need to revise; invalid bboxes found 
+                        b[:8] = np.add(b[:8], bb_bias)
+                        min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
+                        min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
-                        if (max_x - min_x) * (max_y - min_y) >= 3.0: # not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()):
+                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
                             # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
                             dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
@@ -280,7 +282,8 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                             #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
                             #print(dw, dh)
                             
-                            div_boxes.append(bbox)            
+                            div_boxes.append(bbox)  
+                            nl += 1          
 
                 imwrite(os.path.join(save_img_path, save_name),crop)
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
@@ -293,6 +296,7 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                                                                                   float(d[3]), float(d[4]), float(d[5]), \
                                                                                       float(d[6]), float(d[7]), float(d[8])))
                     f.close()
+                    print('total number of labels found:', nl)
                 else: 
                     print('no bboxes found: ',os.path.join(save_txt_path, save_name))
                     f.close()
@@ -342,7 +346,7 @@ def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', 
         #maxTh = np.mean(rgb_image[rgb_image>Cfg.maxTh])
 
         land_mask = landmask(image_path) 
-                         
+        nl = 0  
         
         for h_id, div_h in enumerate(hd[:-1]):
             for w_id, div_w in enumerate(wd[:-1]):
@@ -389,6 +393,7 @@ def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', 
                             #print(dw, dh)
                             
                             div_boxes.append(bbox)  
+                            nl += 1 
 
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
                 imwrite(os.path.join(save_img_path, save_name),crop)
@@ -399,6 +404,7 @@ def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', 
                         #class_name = 'ship' if strd[4]==0 else 'other'
                         f.write('%s %.6f %.6f %.6f %.6f\n' % (d[0], float(d[1]), float(d[2]), float(d[3]), float(d[4])))
                     f.close()
+                    print('total number of labels found:', nl)
                 else: 
                     print('no bboxes found: ',os.path.join(save_txt_path, save_name))
                     f.close()
