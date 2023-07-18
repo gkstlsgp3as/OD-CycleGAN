@@ -272,7 +272,8 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
                         min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
-                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
+                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
+                            and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
                             # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
                             dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
@@ -380,7 +381,8 @@ def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', 
                         #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
                         # land_mask = 1: land, 0: ocean
-                        if not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all():# (max_x - min_x) * (max_y - min_y) >= 3.0 and 
+                        if (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all()) \
+                            and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()):# (max_x - min_x) * (max_y - min_y) >= 3.0 and 
                             # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
                             dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
