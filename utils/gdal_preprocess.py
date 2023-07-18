@@ -272,19 +272,19 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
                         min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
-                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
-                            and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
-                            # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
-                            dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
+                        #if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
+                        #    and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
+                        # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
+                        dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
-                            image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
+                        image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
                             
-                            bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
-                            #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
-                            #print(dw, dh)
+                        bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
+                        #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
+                        #print(dw, dh)
                             
-                            div_boxes.append(bbox)  
-                            nl += 1          
+                        div_boxes.append(bbox)  
+                        nl += 1          
 
                 imwrite(os.path.join(save_img_path, save_name),crop)
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
