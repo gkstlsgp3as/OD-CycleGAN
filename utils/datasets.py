@@ -476,7 +476,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         original_wh = [max(np.array([lb[1::2].max()-lb[1::2].min(),
                                          lb[2::2].max()-lb[2::2].min()])) for lb in l]
                         wh0 = np.multiply(original_wh, shape[0])  # wh of minimum outter bounding box
-                        l = np.array([l[i] for i in range(len(l)) if wh0[i] >= 1.0])
+                        l = np.array([l[i] for i in range(len(l)) if wh0[i] >= 3.0])
                         if l.shape[0]==0:
                             l = np.zeros((0,9), dtype=np.float32)
                     else:

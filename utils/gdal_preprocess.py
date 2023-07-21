@@ -14,7 +14,7 @@ def landmask(tif_name):
     ras_ds = gdal.Open(tif_name, gdal.GA_ReadOnly)
     gt = ras_ds.GetGeoTransform()
 
-    vecPath = "/data/BRIDGE/yolo-rotate/landmask/"
+    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water/"
     vec_ds = ogr.Open(vecPath)
     lyr = vec_ds.GetLayer()
 
@@ -167,7 +167,7 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
     
     valid_num = round(len(tif_list)*0.1)
     
-    valid_set = tif_list[:valid_num]; test_set = tif_list[valid_num:valid_num*2];
+    valid_set = tif_list[:valid_num]; test_set = tif_list[valid_num:valid_num*2]
     train_set = tif_list[valid_num*2:]
     
     ## image division for train and valid dataset
@@ -267,24 +267,25 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         (y1 <= min_y <= y2) and (y1 <= max_y <= y2):
 
                         #b[:8] = np.multiply(b[:8],2)
-                        bb_bias = [-0.5, -0.5, +0.5, -0.5, +0.5, +0.5, -0.5, +0.5] # need to revise; invalid bboxes found 
-                        b[:8] = np.add(b[:8], bb_bias)
-                        min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
-                        min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
+                        #bb_bias = [-0.5, -0.5, +0.5, -0.5, +0.5, +0.5, -0.5, +0.5] # need to revise; invalid bboxes found 
+                        #b[:8] = np.add(b[:8], bb_bias)
+                        #min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
+                        #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
-                        #if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
-                        #    and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): # and ((max_x - min_x) * (max_y - min_y) >= 3.0):
-                        # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
-                        dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
-                            
-                        image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
-                            
-                        bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
-                        #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
-                        #print(dw, dh)
-                            
-                        div_boxes.append(bbox)  
-                        nl += 1          
+                        # 모든 픽셀이 전부 1 (물) 이거나 0 (육지)이면 제외
+                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
+                            and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): #and ((max_x - min_x) * (max_y - min_y) >= 3.0):
+                            # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
+                            dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
+                                
+                            image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
+                                
+                            bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
+                            #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
+                            #print(dw, dh)
+                                
+                            div_boxes.append(bbox)  
+                            nl += 1          
 
                 imwrite(os.path.join(save_img_path, save_name),crop)
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
@@ -297,13 +298,14 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                                                                                   float(d[3]), float(d[4]), float(d[5]), \
                                                                                       float(d[6]), float(d[7]), float(d[8])))
                     f.close()
-                    print('total number of labels found:', nl)
                 else: 
                     print('no bboxes found: ',os.path.join(save_txt_path, save_name))
                     f.close()
                     if random.random() > 0.01:
                         os.remove(os.path.join(save_img_path, save_name))
                         os.remove(os.path.join(save_txt_path, save_name.replace("tif","txt")))
+
+        print('total number of labels found:', nl)
                 
 def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', img_size=640, source='org'):    
     from utils.cfg import Cfg
