@@ -411,7 +411,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         
         # Cache dataset labels, check images and read shapes
         x = {}  # dict
-        nm, nf, ne, nc = 0, 0, 0, 0  # number missing, found, empty, duplicate
+        nm, nf, ne, nc, nlabel = 0, 0, 0, 0, 0  # number missing, found, empty, duplicate, labels
         pbar = tqdm(zip(self.img_files, self.label_files), desc='Scanning images', total=len(self.img_files))
 
         for i, (im_file, lb_file) in enumerate(pbar):
@@ -479,6 +479,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         l = np.array([l[i] for i in range(len(l)) if wh0[i] >= 3.0])
                         if l.shape[0]==0:
                             l = np.zeros((0,9), dtype=np.float32)
+                        nlabel += len(l)
                     else:
                         ne += 1  # label empty
                         l = np.zeros((0, 5), dtype=np.float32)
@@ -496,7 +497,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 print(f'{prefix}WARNING: Ignoring corrupted image and/or label {im_file}: {e}')
 
             pbar.desc = f"{prefix}Scanning '{path.parent / path.stem}' images and labels... " \
-                        f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+                        f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted, {nlabel} are total number of labels"
         pbar.close()
 
         if nf == 0:

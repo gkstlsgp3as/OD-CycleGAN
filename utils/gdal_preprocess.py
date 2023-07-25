@@ -14,7 +14,7 @@ def landmask(tif_name):
     ras_ds = gdal.Open(tif_name, gdal.GA_ReadOnly)
     gt = ras_ds.GetGeoTransform()
 
-    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water/"
+    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water_road/"
     vec_ds = ogr.Open(vecPath)
     lyr = vec_ds.GetLayer()
 
@@ -163,7 +163,6 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
     fl_list = os.listdir(Cfg.img_path)
     tif_list = [fl for fl in fl_list if fl.endswith('tif')]
     random.shuffle(tif_list)
-    tif_list = tif_list[:10]
     
     valid_num = round(len(tif_list)*0.1)
     
