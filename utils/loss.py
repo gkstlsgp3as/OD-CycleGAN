@@ -1945,6 +1945,7 @@ class Polygon_ComputeLoss:
               x ny (grid width) x nx (grid height) x no (89, number of outputs per anchor)
             self.anchors: nl (number of prediction layers) x na (number of anchors per layer) x 2 (width and height)
         """
+        from utils.cfg import Cfg
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
                 
@@ -1964,7 +1965,7 @@ class Polygon_ComputeLoss:
                 pbox = ps[:, :8]  # predicted polygon box
                 
                 # tbox[i] is ordered, and pbox from model will learn the sequential order naturally: so specify ordered=True
-                iou = polygon_bbox_iou(pbox, tbox[i], CIoU=True, ordered=True)  # iou(prediction, target)
+                iou = polygon_bbox_iou(pbox, tbox[i], iou_type=Cfg.iou_type, ordered=True)  # iou(prediction, target)
                 # lbox += (1.0 - iou).mean()  # iou loss
                 
                 zero = torch.tensor(0., device=device)

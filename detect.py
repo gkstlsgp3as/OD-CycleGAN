@@ -273,7 +273,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
             zip_file = save_path.replace('tif', 'zip')
             with zipfile.ZipFile(zip_file, 'a') as z:
                 for ext in ['tif','txt']:
-                    z.write(save_path.replace('tif',ext), compress_type = zipfile.ZIP_DEFLATED)
+                    z.write(save_path.replace('tif',ext), compress_type = zipfile.ZIP_DEFLATED, arcname=os.path.basename(save_path.replace('tif',ext)))
                 z.close()
 
             print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')

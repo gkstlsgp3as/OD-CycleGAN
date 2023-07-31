@@ -14,11 +14,11 @@ def landmask(tif_name):
     ras_ds = gdal.Open(tif_name, gdal.GA_ReadOnly)
     gt = ras_ds.GetGeoTransform()
 
-    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water_road/"
+    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water_bbox/"
     vec_ds = ogr.Open(vecPath)
     lyr = vec_ds.GetLayer()
 
-    filename='/data/BRIDGE/yolo-rotate/landmask/mask/temp.tif'
+    filename='/data/BRIDGE/yolo-rotate/landmask/mask/'+tif_name
     drv_tiff = gdal.GetDriverByName("GTiff") 
     chn_ras_ds = drv_tiff.Create(filename, ras_ds.RasterXSize, ras_ds.RasterYSize, 1, gdal.GDT_Float32)
     chn_ras_ds.SetGeoTransform(gt)
@@ -157,11 +157,17 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
     with open('./data/{}.yaml'.format(datatype), errors='ignore') as f:
         data = yaml.safe_load(f)
     
+    for div_set in ['train', 'valid', 'test']:
+        os.makedirs('./data/images/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
+        os.makedirs('./data/labels/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
+        os.makedirs('./data/org/{}/{}/'.format(datatype, source), exist_ok=True)
+
     random.seed(1004)
 
     ## data split for train and valid data 
     fl_list = os.listdir(Cfg.img_path)
     tif_list = [fl for fl in fl_list if fl.endswith('tif')]
+    tif_list = tif_list[:20]
     random.shuffle(tif_list)
     
     valid_num = round(len(tif_list)*0.1)
@@ -231,7 +237,7 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
         minTh = np.mean(rgb_image[rgb_image>Cfg.minTh])
         #maxTh = np.mean(rgb_image[rgb_image>Cfg.maxTh])
 
-        land_mask = landmask(image_path)     
+        #land_mask = landmask(image_path)     
         nl = 0  
         
         for h_id, div_h in enumerate(hd[:-1]):
@@ -272,19 +278,20 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
                         
                         # 모든 픽셀이 전부 1 (물) 이거나 0 (육지)이면 제외
-                        if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
-                            and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): #and ((max_x - min_x) * (max_y - min_y) >= 3.0):
+                        #if (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).any():
+                        #if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
+                        #    and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): #and ((max_x - min_x) * (max_y - min_y) >= 3.0):
                             # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
-                            dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
-                                
-                            image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
-                                
-                            bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
-                            #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
-                            #print(dw, dh)
-                                
-                            div_boxes.append(bbox)  
-                            nl += 1          
+                        dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
+                            
+                        image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
+                            
+                        bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
+                        #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
+                        #print(dw, dh)
+                            
+                        div_boxes.append(bbox)  
+                        nl += 1          
 
                 imwrite(os.path.join(save_img_path, save_name),crop)
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)

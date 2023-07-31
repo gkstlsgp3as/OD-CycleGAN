@@ -941,13 +941,15 @@ def apply_classifier(x, model, img, im0):
 def increment_path(path, exist_ok=True, sep=''):
     # Increment path, i.e. runs/exp --> runs/exp{sep}0, runs/exp{sep}1 etc.
     path = Path(path)  # os-agnostic
-    if (path.exists() and exist_ok) or (not path.exists()):
+    
+    if (path.exists() and exist_ok): #or (not path.exists()):
         return str(path)
     else:
         dirs = glob.glob(f"{path}{sep}*")  # similar paths
         matches = [re.search(rf"%s{sep}(\d+)" % path.stem, d) for d in dirs]
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
+
         return f"{path}{sep}{n}"  # update path
 
 # Ancillary functions with polygon anchor boxes-------------------------------------------------------------------------------------------
@@ -1024,7 +1026,7 @@ def polygon_scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
     polygon_clip_coords(coords, img0_shape)  # inplace operation
     return coords
 
-def polygon_bbox_iou(boxes1, boxes2, GIoU=False, DIoU=False, CIoU=False, eps=1e-7, ordered=False):
+def polygon_bbox_iou(boxes1, boxes2, iou_type='ciou', eps=1e-7, ordered=False, constant=12.8):
     """
         Compute iou of polygon boxes for class Polygon_ComputeLoss in loss.py via cpu or cuda;
         For cuda code, please refer to files in ./iou_cuda
@@ -1039,15 +1041,27 @@ def polygon_bbox_iou(boxes1, boxes2, GIoU=False, DIoU=False, CIoU=False, eps=1e-
         boxes1_ = boxes1.float().contiguous()
         boxes2_ = boxes2.float().contiguous()
         # using shapely (cpu) to compute
-        inter, union = polygon_b_inter_union(boxes1_, boxes2_)
+        if iou_type != 'gaussian':
+            inter, union = polygon_b_inter_union(boxes1_, boxes2_)
     
-    union += eps
-    iou = inter / union
-    iou[torch.isnan(inter)] = 0.0
-    iou[torch.logical_and(torch.isnan(inter), torch.isnan(union))] = 1.0
-    iou[torch.isnan(iou)] = 0.0
-    
-    if GIoU or DIoU or CIoU:
+    if iou_type != 'gaussian':
+        union += eps
+        iou = inter / union
+        iou[torch.isnan(inter)] = 0.0
+        iou[torch.logical_and(torch.isnan(inter), torch.isnan(union))] = 1.0
+        iou[torch.isnan(iou)] = 0.0
+
+    GIoU=False; DIoU=False; CIoU=False; GaIoU=False
+    if iou_type == 'giou':
+        GIoU = True
+    elif iou_type == 'diou':
+        DIoU = True
+    elif iou_type == 'ciou':
+        CIoU = True  
+    elif iou_type == 'gaussian':
+        GaIoU = True  
+
+    if GIoU or DIoU or CIoU or GaIoU:
         # minimum bounding box of boxes1 and boxes2
         b1_x1, b1_x2 = boxes1[:, 0::2].min(dim=1)[0], boxes1[:, 0::2].max(dim=1)[0] # n,
         b1_y1, b1_y2 = boxes1[:, 1::2].min(dim=1)[0], boxes1[:, 1::2].max(dim=1)[0] # n,
@@ -1070,18 +1084,37 @@ def polygon_bbox_iou(boxes1, boxes2, GIoU=False, DIoU=False, CIoU=False, eps=1e-
                     iou = iou.cuda()
                     alpha = v / (v - iou + (1 + eps))
                 iou -= (rho2 / c2 + v * alpha)  # CIoU
+        elif GaIoU: 
+            mins1 = torch.cat([boxes1[:, 0::2].min(dim=1).values.unsqueeze(0), boxes1[:, 1::2].min(dim=1).values.unsqueeze(0)], dim=0)
+            maxs1 = torch.cat([boxes1[:, 0::2].max(dim=1).values.unsqueeze(0), boxes1[:, 1::2].max(dim=1).values.unsqueeze(0)], dim=0)
+            mins2 = torch.cat([boxes2[:, 0::2].min(dim=1).values.unsqueeze(0), boxes2[:, 1::2].min(dim=1).values.unsqueeze(0)], dim=0)
+            maxs2 = torch.cat([boxes2[:, 0::2].max(dim=1).values.unsqueeze(0), boxes2[:, 1::2].max(dim=1).values.unsqueeze(0)], dim=0)
+
+            center1 = (mins1+maxs1)/2; center2 = (mins2+maxs2)/2
+            dists = (center1 - center2)**2; center_distance = dists[0,:]+dists[1,:] # dist = (x1-x2)**2 + (y1-y2)**2
+            
+            w2, h2 = b2_x2-b2_x1, b2_y2-b2_y1+eps
+            w1, h1 = b1_x2-b1_x1, b1_y2-b1_y1+eps
+            wh_distance = ((w1 - w2) ** 2 + (h1 - h2) ** 2) / 4
+
+            wassersteins = torch.sqrt(center_distance + wh_distance)
+            normalized_wasserstein = torch.exp(-wassersteins/constant)
+                
+            iou = normalized_wasserstein
         else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
             c_area = cw * ch + eps  # convex area
             iou -= (c_area - union) / c_area  # GIoU
     return iou  # IoU
 
 
-def polygon_box_iou(boxes1, boxes2, iou_type='iou', eps=1e-7, ordered=False):
+def polygon_box_iou(boxes1, boxes2, iou_type='iou', eps=1e-7, ordered=False, constant=12.8):
     """
         Compute iou of polygon boxes via cpu or cuda;
         For cuda code, please refer to files in ./iou_cuda
         Returns the IoU of shape (n, m) between boxes1 and boxes2. boxes1 is nx8, boxes2 is mx8
     """
+    import time 
+    start_time = time.time()
     # For testing this function, please use ordered=False
     if not ordered:
         boxes1, boxes2 = order_corners(boxes1.clone().cpu()), order_corners(boxes2.clone().cpu())
@@ -1089,6 +1122,7 @@ def polygon_box_iou(boxes1, boxes2, iou_type='iou', eps=1e-7, ordered=False):
         boxes1, boxes2 = boxes1.clone().cpu(), boxes2.clone().cpu()
         
     # using shapely (cpu) to compute
+    
     inter, union = polygon_inter_union(boxes1, boxes2)
     union += eps
     iou = inter / union
@@ -1096,15 +1130,16 @@ def polygon_box_iou(boxes1, boxes2, iou_type='iou', eps=1e-7, ordered=False):
     iou[torch.logical_and(torch.isnan(inter), torch.isnan(union))] = 1.0
     iou[torch.isnan(iou)] = 0.0
 
-    GIoU=False; DIoU=False; CIoU=False
+    GIoU=False; DIoU=False; CIoU=False; GaIoU=False
     if iou_type == 'giou':
         GIoU = True
     elif iou_type == 'diou':
         DIoU = True
     elif iou_type == 'ciou':
-        CIoU = True    
-    
-    if GIoU or DIoU or CIoU:
+        CIoU = True  
+    elif iou_type == 'gaussian':
+        GaIoU = True  
+    if GIoU or DIoU or CIoU or GaIoU:
         # minimum bounding box of boxes1 and boxes2
         b1_x1, b1_x2 = boxes1[:, 0::2].min(dim=1)[0], boxes1[:, 0::2].max(dim=1)[0] # 1xn
         b1_y1, b1_y2 = boxes1[:, 1::2].min(dim=1)[0], boxes1[:, 1::2].max(dim=1)[0] # 1xn
@@ -1126,9 +1161,28 @@ def polygon_box_iou(boxes1, boxes2, iou_type='iou', eps=1e-7, ordered=False):
                     with torch.no_grad():
                         alpha = v / (v - iou[i, :] + (1 + eps))
                     iou[i, :] -= (rho2 / c2 + v * alpha)  # CIoU
+            elif GaIoU:
+                mins1 = torch.cat([boxes1[:, 0::2].min(dim=1).values.unsqueeze(0), boxes1[:, 1::2].min(dim=1).values.unsqueeze(0)], dim=0)
+                maxs1 = torch.cat([boxes1[:, 0::2].max(dim=1).values.unsqueeze(0), boxes1[:, 1::2].max(dim=1).values.unsqueeze(0)], dim=0)
+                mins2 = torch.cat([boxes2[:, 0::2].min(dim=1).values.unsqueeze(0), boxes2[:, 1::2].min(dim=1).values.unsqueeze(0)], dim=0)
+                maxs2 = torch.cat([boxes2[:, 0::2].max(dim=1).values.unsqueeze(0), boxes2[:, 1::2].max(dim=1).values.unsqueeze(0)], dim=0)
+
+                center1 = (mins1+maxs1)/2; center2 = (mins2+maxs2)/2
+                dists = (center1 - center2)**2; center_distance = dists[0,:]+dists[1,:] # dist = (x1-x2)**2 + (y1-y2)**2
+                
+                w2, h2 = b2_x2-b2_x1, b2_y2-b2_y1+eps
+                w1, h1 = b1_x2[i]-b1_x1[i], b1_y2[i]-b1_y1[i]+eps
+                wh_distance = ((w1 - w2) ** 2 + (h1 - h2) ** 2) / 4
+
+                wassersteins = torch.sqrt(center_distance + wh_distance)
+                normalized_wasserstein = torch.exp(-wassersteins/constant)
+                
+                iou = normalized_wasserstein
             else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
                 c_area = cw * ch + eps  # convex area
                 iou[i, :] -= (c_area - union[i, :]) / c_area  # GIoU
+
+        #print(time.time()-start_time)
     return iou  # IoU
 
 def polygon_non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False,
@@ -1238,22 +1292,25 @@ def polygon_nms_kernel(x, iou_thres):
     x[:, :8] = order_corners(x[:, :8])
     indices = scores_sort_index
     selected_indices = []
-    
+    start_time=time.time()
+    #breakpoint()
     # Iterate through all predicted classes
     for unique_label in unique_labels:
         x_ = x[x[:, 9]==unique_label]
         indices_ = indices[x[:, 9]==unique_label]
         
         while x_.shape[0]:
+            
             # Save the indice with the highest confidence
             selected_indices.append(indices_[0])
             if len(x_) == 1: break
             # Compute the IOUs for all other the polygon boxes
             iou = polygon_box_iou(x_[0:1, :8], x_[1:, :8], ordered=True, iou_type=Cfg.iou_type).view(-1)
+            #print(len(x_))
             # Remove overlapping detections with IoU >= NMS threshold
             x_ = x_[1:][iou < iou_thres]
             indices_ = indices_[1:][iou < iou_thres]
-            
+    #print("whole processing..", time.time()-start_time)
     return torch.LongTensor(selected_indices)
 
 def order_corners(boxes):

@@ -1004,12 +1004,14 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                             l = np.unique(l, axis=0) # duplicate labels
                         
                         # filter out 3 pixels
+                        '''
                         original_wh = [max(np.array([lb[1::2].max()-lb[1::2].min(),
                                          lb[2::2].max()-lb[2::2].min()])) for lb in l]
                         wh0 = np.multiply(original_wh, shape[0])  # wh of minimum outter bounding box
                         l = np.array([l[i] for i in range(len(l)) if wh0[i] >= 3.0])
                         if l.shape[0]==0:
                             l = np.zeros((0,9), dtype=np.float32)
+                        '''
                     else:
                         ne += 1  # label empty
                         # l = np.zeros((0, 5), dtype=np.float32)

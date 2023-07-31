@@ -645,9 +645,9 @@ if __name__ == '__main__':
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test); append elements of iterables -> [512] > [512, 512]
         opt.name = 'evolve' if opt.evolve else opt.name
         lr0 = hyp['lr0']; lrf = hyp['lrf']; img_size = opt.img_size[0]
-        opt.save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve)+\
-            f'_batch{opt.batch_size}_epoch{opt.epochs}_imgsize{img_size}_lr{lr0}_lrf{lrf}_smoothing{opt.label_smoothing}_multiscale{opt.multi_scale}'  # increment run
-
+        opt.save_dir = Path(increment_path((opt.project+'/'+opt.name), exist_ok=opt.exist_ok | opt.evolve)+
+                            f'_batch{opt.batch_size}_epoch{opt.epochs}_imgsize{img_size}_lr{lr0}_lrf{lrf}_smoothing{opt.label_smoothing}_multiscale{opt.multi_scale}')  # increment run
+        
     # DDP mode
     opt.total_batch_size = opt.batch_size
     device = select_device(opt.device, batch_size=opt.batch_size)
