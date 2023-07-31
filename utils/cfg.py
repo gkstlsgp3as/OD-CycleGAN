@@ -81,7 +81,7 @@ elif Cfg.mosaic:
 Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
 
-Cfg.iou_type = 'gaussian'  # 'iou', 'giou', 'diou', 'ciou', 'gaussian'
+Cfg.iou_type = 'ciou'  # 'iou', 'giou', 'diou', 'ciou', 'gaussian'
 
 # Additional Input information and variables
 # Name of each image: S1, CSK, K5, ICEYE

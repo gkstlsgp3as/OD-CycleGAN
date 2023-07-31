@@ -131,10 +131,10 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
         for d_id, img0 in enumerate(div_img_list):
             # 원본 이미지 좌표로 변환하기 위해 분활 좌표를 저장
             div_x, div_y = div_coord[d_id][0], div_coord[d_id][1]
-            img = letterbox(img0, img_size, stride=Cfg.stride)[0]
+            #img = letterbox(img0, img_size, stride=Cfg.stride)[0]
             # Convert
-            
-            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416; already applied
+            img0 = cv2.cvtColor(img0, cv2.COLOR_BGR2RGB)
+            img = img0[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416; already applied
             img = np.ascontiguousarray(img)
                             
             img = torch.from_numpy(img).to(device)

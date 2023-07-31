@@ -433,7 +433,6 @@ def division_testset(input_band=None, img_size=640):
     wd = [x for x in range(0, w, img_size-200)]
     hd[-1] = h - img_size; wd[-1] = w - img_size
     hd.sort(); wd.sort()
-    
     for h_id, div_h in enumerate(hd[:-1]):
         for w_id, div_w in enumerate(wd[:-1]):
             # 분할된 이미지의 좌표
@@ -445,6 +444,10 @@ def division_testset(input_band=None, img_size=640):
             crop = input_band[y1:y2, x1:x2]
             img_list.append(crop)
             div_coord.append([dw, dh, div_w, div_h])
+
+            save_name = str(x1) + '_' + str(y1) + '_' + str(x2) + '_' + str(y2) + '_' + 'test.tif'
+        
+            #imwrite(os.path.join('./data/test', save_name),crop)
 
     return img_list, div_coord    
        

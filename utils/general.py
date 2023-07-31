@@ -1225,7 +1225,6 @@ def polygon_non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, cla
         # If none remain, process next image
         if not x.shape[0]:
             continue
-
         # Compute conf
         x[:, 9:] *= x[:, 8:9]  # conf = obj_conf * cls_conf
 
