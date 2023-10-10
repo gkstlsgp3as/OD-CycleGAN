@@ -28,7 +28,7 @@ from models.experimental import attempt_load
 from models.yolo import Model, Polygon_Model
 from utils.autoanchor import check_anchors, polygon_check_anchors
 from utils.datasets import create_dataloader
-from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
+from utils.general import labels_to_class_weights, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
@@ -36,7 +36,13 @@ from utils.loss import ComputeLoss, ComputeLossOTA, Polygon_ComputeLoss
 from utils.plots import plot_images, plot_labels, polygon_plot_labels, plot_results, plot_evolution, polygon_plot_images, set_colors
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
-from utils.gdal_preprocess import split_set, concat_txt2csv
+from utils.gdal_preprocess import split_set, make_lists
+
+# GAN
+from options.train_options import TrainOptions
+from data.gan_data import create_dataset
+from models.gan import create_model
+from utils.gan_utils.visualizer import Visualizer
 
 logger = logging.getLogger(__name__) # generate logger 
 print (os.path.dirname(__file__))
@@ -104,6 +110,13 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     else:
         
         model = model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+
+    # GAN
+    #gan_dataset = create_dataset(opt)  
+    #print('The number of training images = %d' % len(gan_dataset)) # get the number of images in the dataset.
+    gan_model = create_model(opt)    
+    gan_model.setup(opt)
+    gan_visualizer = Visualizer(opt)
 
     # gwang add
     with torch_distributed_zero_first(rank):
@@ -260,7 +273,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '), 
                                             polygon=polygon)
-    
+    breakpoint()
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -361,7 +374,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, edges, paths, _) in pbar:  # batch -------------------------------------------------------------
             #imgs, targets, paths, _ = next(iter(dataloader))
             #i, (imgs, targets, paths, _) = next(iter(pbar))
             ni = i + nb * epoch  # number integrated batches (since train start)
@@ -500,19 +513,21 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 torch.save(ckpt, last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
+                    prev_bests = os.listdir(wdir); prev_bests = [b for b in prev_bests if b.startswith('best_')];
+                    os.remove(os.path.join(wdir, prev_bests[0]))
                     pt_name = Cfg.Satellite + '_epoch' + str(epoch) + '_div' + str(Cfg.division) +\
                         '_pre' + str(round(results[0], 3)) + '_rec' + str(round(results[1], 3)) +\
                             '_map' + str(round(results[2], 3)) + '_map95' + str(round(results[3], 3))
                     torch.save(ckpt, wdir / ('best_'+pt_name+'.pt'))
-                if (best_fitness == fi) and (epoch >= 200):
+                #if (best_fitness == fi) and (epoch >= 200):
                     
-                    torch.save(ckpt, wdir / 'best_{:03d}.pt'.format(epoch))
-                if epoch == 0:
-                    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
-                elif ((epoch+1) % 25) == 0:
-                    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
-                elif epoch >= (epochs-5):
-                    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
+                #    torch.save(ckpt, wdir / 'best_{:03d}.pt'.format(epoch))
+                #if epoch == 0:
+                #    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
+                #elif ((epoch+1) % 25) == 0:
+                #    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
+                #elif epoch >= (epochs-5):
+                #    torch.save(ckpt, wdir / 'epoch_{:03d}.pt'.format(epoch))
                 if wandb_logger.wandb:
                     if ((epoch + 1) % opt.save_period == 0 and not final_epoch) and opt.save_period != -1:
                         wandb_logger.log_model(
@@ -566,47 +581,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default='yolov7.yaml', help='model.yaml path')
-    parser.add_argument('--data', type=str, default='data/sentinel.yaml', help='data.yaml path')
-    parser.add_argument('--hyp', type=str, default='data/hyp.scratch.p5.yaml', help='hyperparameters path')
-    parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs')
-    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
-    parser.add_argument('--rect', action='store_true', help='rectangular training')
-    parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
-    parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
-    parser.add_argument('--notest', action='store_true', help='only test final epoch')
-    parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
-    parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
-    parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
-    parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--image-weights', action='store_true', help='use weighted image selection for training')
-    parser.add_argument('--device', default='0', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%%')
-    parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
-    parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
-    parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
-    parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
-    parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
-    parser.add_argument('--project', default='runs/train', help='save to project/name')
-    parser.add_argument('--entity', default=None, help='W&B entity')
-    parser.add_argument('--name', default='exp', help='save to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--quad', action='store_true', help='quad dataloader')
-    parser.add_argument('--linear-lr', action='store_true', help='linear LR')
-    parser.add_argument('--label-smoothing', type=float, default=0.0, help='Label smoothing epsilon')
-    parser.add_argument('--upload_dataset', action='store_true', help='Upload dataset as W&B artifact table')
-    parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
-    parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
-    parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
-    parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
-    parser.add_argument('--polygon', default=False, action='store_true', help='enable polygon anchor boxes')
-    parser.add_argument('--divide', default=False, action='store_true', help='divide images into patches')
-    parser.add_argument('--mode', type=str, help='dst source of tif files')
-    parser.add_argument('--target', default='BRIDG', help='define the target objects')
-    opt = parser.parse_args()
+    opt = TrainOptions().parse()
     
     # Set DDP variables; Distributed Data Parallel 
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1 # total number of gpus
@@ -616,11 +591,19 @@ if __name__ == '__main__':
     #if opt.global_rank in [-1, 0]:
     #    check_git_status()
     #    check_requirements()
-    
+
     from utils.cfg import Cfg
+    datatype = opt.data[:-5]
     if opt.divide:
-        split_set(opt.img_size[0], datatype=opt.data.split('/')[-1][:-5], source=opt.mode, polygon=opt.polygon)
-        
+        split_set(opt.img_size[0], datatype=datatype, source=opt.mode, polygon=opt.polygon, shp_path=opt.shp_path)
+    
+    dataset_path = './data/org/{}/{}/{}'.format(datatype, opt.mode, opt.subset)
+    os.makedirs('./data/org/{}/{}/{}'.format(datatype, opt.mode, opt.subset), exist_ok=True)      
+    
+    if len(os.listdir(dataset_path))==0:
+        print("main makelists")
+        make_lists(datatype=opt.data[:-5], source=opt.mode, subset='') # subset = {'', 'A', 'B} 
+    
     # Hyperparameters
     opt.hyp  = check_file(opt.hyp)
     with open(opt.hyp) as f:
@@ -645,12 +628,10 @@ if __name__ == '__main__':
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test); append elements of iterables -> [512] > [512, 512]
         opt.name = 'evolve' if opt.evolve else opt.name
         lr0 = hyp['lr0']; lrf = hyp['lrf']; img_size = opt.img_size[0]
-        opt.save_dir = Path(increment_path((opt.project+'/'+opt.name), exist_ok=opt.exist_ok | opt.evolve)+
-                            f'_batch{opt.batch_size}_epoch{opt.epochs}_imgsize{img_size}_lr{lr0}_lrf{lrf}_smoothing{opt.label_smoothing}_multiscale{opt.multi_scale}')  # increment run
-        
     # DDP mode
     opt.total_batch_size = opt.batch_size
-    device = select_device(opt.device, batch_size=opt.batch_size)
+    
+    opt.device = select_device(opt.gpu_ids, batch_size=opt.batch_size)
     if opt.local_rank != -1:
         assert torch.cuda.device_count() > opt.local_rank # cpu number 
         torch.cuda.set_device(opt.local_rank)
@@ -668,7 +649,7 @@ if __name__ == '__main__':
             prefix = colorstr('tensorboard: ')
             logger.info(f"{prefix}Start with 'tensorboard --logdir {opt.project}', view at http://localhost:6006/")
             tb_writer = SummaryWriter(opt.save_dir)  # generate the Tensorboard instance
-        train(hyp, opt, device, tb_writer, polygon=opt.polygon)
+        train(hyp, opt, opt.device, tb_writer, polygon=opt.polygon)
 
     # Evolve hyperparameters (optional)
     else:

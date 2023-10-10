@@ -6,30 +6,87 @@ import pandas as pd
 import json
 from tifffile import imwrite
 
-def landmask(tif_name):
-    from osgeo import gdal
+from tifffile import imwrite
+
+def get_lonlat(shp_path):
+    import geopandas as gpd
+    from operator import itemgetter
+    print("getting lonlat from... ", shp_path)
+    dir_list = os.listdir(shp_path)
+    dir_list = [d for d in dir_list if os.path.isdir(shp_path+d)]
+
+    bounds_lst = {}
+    for d in dir_list:
+        df = gpd.read_file(shp_path+d)
+        bounds = df.geometry.apply(lambda x: x.bounds).tolist()
+
+        minx, miny, maxx, maxy = min(bounds, key=itemgetter(0))[0], min(bounds, key=itemgetter(1))[1], max(bounds, key=itemgetter(2))[2], max(bounds, key=itemgetter(3))[3] #https://stackoverflow.com/questions/13145368/find-the-maximum-value-in-a-list-of-tuples-in-python
+        bounds_lst[d] = [minx, miny, maxx, maxy]
+
+    return bounds_lst
+
+def landmask(shp_path):
     from osgeo import ogr
-    from PIL import Image
+    import os
     
-    ras_ds = gdal.Open(tif_name, gdal.GA_ReadOnly)
-    gt = ras_ds.GetGeoTransform()
+    print("getting landmask...")
+    dir_list = os.listdir(shp_path) 
+    dir_list = [d for d in dir_list if os.path.isdir(shp_path+d)]
 
-    vecPath = "/data/BRIDGE/yolo-rotate/landmask/water_bbox/"
-    vec_ds = ogr.Open(vecPath)
-    lyr = vec_ds.GetLayer()
+    lyrs = {}
+    for d in dir_list:
+        vecPath = shp_path+d
+        vec_ds = ogr.Open(vecPath)
+        lyrs[d] = vec_ds.GetLayer()
 
-    filename='/data/BRIDGE/yolo-rotate/landmask/mask/'+tif_name
-    drv_tiff = gdal.GetDriverByName("GTiff") 
-    chn_ras_ds = drv_tiff.Create(filename, ras_ds.RasterXSize, ras_ds.RasterYSize, 1, gdal.GDT_Float32)
-    chn_ras_ds.SetGeoTransform(gt)
+    return lyrs
 
-    gdal.RasterizeLayer(chn_ras_ds, [1], lyr) 
-    chn_ras_ds.GetRasterBand(1).SetNoDataValue(0.0) 
-    chn_ras_ds = None
+def rasterize(tif_path, shp_path, idx):
+    print("rasterizing...")
+    ras_ds = gdal.Open(tif_path, gdal.GA_ReadOnly)
 
-    raster = gdal.Open(filename)
-    band_data = np.array(raster.GetRasterBand(1).ReadAsArray())
-    return np.array(band_data, np.uint8)
+    res_tif_name = os.path.join(shp_path, 'temp.tif')
+    
+    vecpath = os.path.join(shp_path, idx[0])
+    ulx, xsize, rotx, uly, roty, ysize = ras_ds.GetGeoTransform()
+    XSize = ras_ds.RasterXSize # Raster size in pixels (columns)
+    YSize = ras_ds.RasterYSize # Raster size in pixels (rows)
+    lrx = ulx + (XSize*abs(xsize)) # Calculate the lower right x coordinate
+    lry = uly - (YSize*abs(ysize)) # Calculate the lower right y coordinate
+    
+    gdal.Rasterize(res_tif_name, vecpath,
+                    outputType=gdal.GDT_Byte,
+                    outputSRS='EPSG:4326',
+                    width=XSize, height=YSize,
+                    outputBounds=[ulx, lry, lrx, uly],
+                    allTouched=True)
+    
+    shapeRasDS = gdal.Open(res_tif_name) # Open raster file in memory with gdal
+    band_data = shapeRasDS.ReadAsArray() # Read into numpy array
+    
+    gdal.Unlink(res_tif_name) # remove file from memory
+
+    if len(idx) > 1:
+        for region in idx[1:]:
+            res_tif_name = os.path.join(shp_path, 'temp2.tif')
+            vecpath = os.path.join(shp_path, region)
+
+            gdal.Rasterize(res_tif_name, vecpath,
+                outputType=gdal.GDT_Byte,
+                outputSRS='EPSG:4326',
+                width=XSize, height=YSize,
+                outputBounds=[ulx, lry, lrx, uly],
+                allTouched=True)
+            
+            shapeRasDS = gdal.Open(res_tif_name) # Open raster file in memory with gdal
+            band_data2 = shapeRasDS.ReadAsArray() # Read into numpy array
+            
+            row, col = np.where(band_data2)
+
+            band_data[row, col] = band_data2[row, col]
+
+    band_data = 1*(band_data > 0)
+    return np.array(band_data, np.float32)
 
 def geotiffreadRef(tif_name):
     import gdal
@@ -148,26 +205,22 @@ def concat_txt2csv(exportPath='./milestone/rgb_train.csv', typeNum=2):
     df.to_csv(exportPath, index=False)
     
 
-def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
+def split_set(img_size=640, datatype='sentinel', source='org', polygon=True, shp_path=''):
     from utils.cfg import Cfg
     import pandas as pd
     import random
     
-    import yaml
-    with open('./data/{}.yaml'.format(datatype), errors='ignore') as f:
-        data = yaml.safe_load(f)
-    
-    for div_set in ['train', 'valid', 'test']:
+    for i, div_set in enumerate(['train', 'valid', 'test', 'trainA', 'validA', 'testA', 'trainB', 'validB', 'testB']):
         os.makedirs('./data/images/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
-        os.makedirs('./data/labels/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
-        os.makedirs('./data/org/{}/{}/'.format(datatype, source), exist_ok=True)
+        
+        if i < 3:
+            os.makedirs('./data/labels/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
 
     random.seed(1004)
 
     ## data split for train and valid data 
     fl_list = os.listdir(Cfg.img_path)
     tif_list = [fl for fl in fl_list if fl.endswith('tif')]
-    tif_list = tif_list[:20]
     random.shuffle(tif_list)
     
     valid_num = round(len(tif_list)*0.1)
@@ -180,12 +233,22 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
     #f = open('./data/div_{}.txt'.format(str(div_num)), 'w')
     
     division = division_set_poly if polygon else division_set
+    
+    bounds = get_lonlat(shp_path)
+    #lyrs = landmask(shp_path)
 
-    division(valid_set, origin_image_folder, 'valid', datatype, img_size, source)
-    division(train_set, origin_image_folder, 'train', datatype, img_size, source)
-    division(test_set, origin_image_folder, 'test', datatype, img_size, source)
-           
-    for i, div_set in enumerate(['train','valid','test']):
+    division(valid_set, origin_image_folder, 'valid', datatype, img_size, source, shp_path, bounds)
+    division(train_set, origin_image_folder, 'train', datatype, img_size, source, shp_path, bounds)
+    division(test_set, origin_image_folder, 'test', datatype, img_size, source, shp_path, bounds)
+
+def make_lists(datatype='sentinel', source='org', subset=''):
+    
+    import yaml
+    with open('./data/{}.yaml'.format(datatype), errors='ignore') as f:
+        data = yaml.safe_load(f)
+    print("making lists... for ./data/org/{}/{}/{}".format(datatype, source, subset))
+    
+    for i, div_set in enumerate(['train'+subset,'valid'+subset,'test'+subset]):
         
         f = open(data[div_set],'w')
         
@@ -194,10 +257,26 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True):
         [f.write(l.replace('.tif','')+'\n') for l in fl_list]
         f.close() 
         
-        concat_txt2csv(exportPath='./milestone/rgb_{}.csv'.format(div_set), typeNum=i+1)
+        #concat_txt2csv(exportPath='./milestone/rgb_{}.csv'.format(div_set), typeNum=i+1)
+
+def return_shpidx(bounds, tif_bounds):
+    idx = []
+    tif_area = (tif_bounds[2] - tif_bounds[0] + 1) * (tif_bounds[3] - tif_bounds[1] + 1)
+    for region, bb in bounds.items():
+        shp_area = (bb[2] - bb[0] + 1) * (bb[3] - bb[1] + 1)
+        x1 = max(bb[0], tif_bounds[0]); y1 = max(bb[1], tif_bounds[1])
+        x2 = max(bb[2], tif_bounds[2]); y2 = max(bb[3], tif_bounds[3]) # obtain x1, y1, x2, y2 of the intersection
+
+        w = max(0, x2-x1+1); h = max(0, y2-y1+1) # compute the width and height of the intersection
+        inter = w * h
+        iou = inter / (tif_area + shp_area - inter)
+        
+        if iou > 0: idx.append(region)
+    #https://minimin2.tistory.com/144
+    return idx
 
 # 이미지를 분할하고 각 이미지의 bbox 정보를 분활된 이미지에 맞게 변환
-def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentinel', img_size=640, source='org'):    
+def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentinel', img_size=640, source='org', shp_path='', bounds=None):    
     from utils.cfg import Cfg
     from utils.general import order_corners
     import torch
@@ -206,10 +285,23 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
     
     print("Start dividing images for polygon\n\n")
     for i in image_list:
-        last_name = i.split('_')[-1]
+        last_name = i.split('_')[-3]
         image_path = os.path.join(origin_image_folder, i)
         
         bandnumber = Cfg.Satelliteband
+
+        # rasterizing landlines shapefile
+        print("Opening: ", image_path)
+        ras_ds = gdal.Open(image_path, gdal.GA_ReadOnly)
+        band_data = np.array(ras_ds.GetRasterBand(1).ReadAsArray())
+        print("Opened: ", image_path)
+        # Get raster statistics
+        gt = ras_ds.GetGeoTransform()
+        tif_minx = min(gt[0], gt[0]+gt[1]*band_data.shape[0]); tif_maxx = max(gt[0], gt[0]+gt[1]*band_data.shape[0])
+        tif_miny = min(gt[3], gt[3]+gt[5]*band_data.shape[1]); tif_maxy = max(gt[3], gt[3]+gt[5]*band_data.shape[1])
+        
+        idx = return_shpidx(bounds, [tif_minx, tif_miny, tif_maxx, tif_maxy])
+        landmsk = rasterize(image_path, shp_path, idx)
 
         # RGB로 변환
         if Cfg.NewTest == 0:
@@ -248,19 +340,38 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                 
                 # 이미지 크롭
                 crop = rgb_image[y1:y2, x1:x2]
-                # Image.fromarray(crop).save('./milestone/line/crop_'+save_name.replace('tif','png'))
+                land_crop = landmsk[y1:y2, x1:x2]
+                mask = crop > 0 
+                land_crop = np.dstack((land_crop, land_crop, land_crop))
+                land_crop = land_crop*mask
                 
-                #lines = line_detection(crop)
-                # Image.fromarray(lines*255).save('./milestone/line/lines_10560_0_11200_640_9D5A.png')
+                # ignore where shpfile is not fully matched
+                if (crop==0).all() or (land_crop==0).all():
+                    continue
+                
+                row, col, _ = np.where(mask)
+                min_r = min(row); max_r = max(row); min_c = min(col); max_c = max(col)
+                l_row, l_col, _ = np.where(land_crop)
+                l_min_r = min(l_row); l_max_r = max(l_row); l_min_c = min(l_col); l_max_c = max(l_col)
+            
+                if (abs((min_r - l_min_r))>200) or (abs((min_c - l_min_c))>200) or (abs((max_r - l_max_r))>200) or (abs((max_c - l_max_c))>200):
+                    continue
+
+                r, c, v = np.where(land_crop[...,1:]==0)
+                if (len(r)==0) or (len(c)==0): # only red componenets
+                    continue 
+                land_crop[r, c, v] = 0
                 
                 div_boxes = []
-                save_name = str(x1) + '_' + str(y1) + '_' + str(x2) + '_' + str(y2) + '_' + last_name
+                save_name = str(x1) + '_' + str(y1) + '_' + str(x2) + '_' + str(y2) + '_' + last_name 
                 line = save_name
                 
                 save_txt_path = './data/labels/{}/{}/{}/'.format(datatype, source, div_set)
-                save_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set)
+                save_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set+'A')
+                save_concat_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set)
+                save_edge_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set+'B')
                 
-                f = open(os.path.join(save_txt_path, save_name.replace("tif","txt")), 'w')
+                f = open(os.path.join(save_txt_path, save_name+'.txt'), 'w')
                 
                 for b in bboxes:
                     # 현재 분할된 이미지의 x, y 구간 
@@ -271,17 +382,6 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                     if (x1 <= min_x <= x2) and (x1 <= max_x <= x2) and \
                         (y1 <= min_y <= y2) and (y1 <= max_y <= y2):
 
-                        #b[:8] = np.multiply(b[:8],2)
-                        #bb_bias = [-0.5, -0.5, +0.5, -0.5, +0.5, +0.5, -0.5, +0.5] # need to revise; invalid bboxes found 
-                        #b[:8] = np.add(b[:8], bb_bias)
-                        #min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
-                        #min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
-                        
-                        # 모든 픽셀이 전부 1 (물) 이거나 0 (육지)이면 제외
-                        #if (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).any():
-                        #if not ((land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] > 0).all())\
-                        #    and (not (land_mask[round(min_y):round(max_y), round(min_x):round(max_x)] == 0).all()): #and ((max_x - min_x) * (max_y - min_y) >= 3.0):
-                            # 원본 bbox 좌표를 분할된 이미지 좌표로 변환 
                         dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
                             
                         image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
@@ -293,10 +393,16 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                         div_boxes.append(bbox)  
                         nl += 1          
 
-                imwrite(os.path.join(save_img_path, save_name),crop)
+                land_crop = np.array(land_crop, np.float32)
+                #crop = np.dstack((crop[...,1], crop[...,1], crop[...,1]))
+                #crop = cv2.resize(crop, dsize=(img_size, img_size), interpolation=cv2.INTER_AREA)
+                concat = cv2.hconcat([crop, land_crop])
+                #imwrite(os.path.join(save_edge_img_path, save_name+'_B.tif'), land_crop)
+                imwrite(os.path.join(save_concat_img_path, save_name+'.tif'), concat)
+                #imwrite(os.path.join(save_img_path, save_name+'_A.tif'),crop)
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
                 if len(div_boxes) > 0:
-                    print('saved: ',os.path.join(save_img_path, save_name))
+                    print('saved: ',os.path.join(save_txt_path, save_name+'.txt'))
                     
                     for d in div_boxes:
                         #class_name = 'ship' if strd[4]==0 else 'other'
@@ -308,8 +414,10 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                     print('no bboxes found: ',os.path.join(save_txt_path, save_name))
                     f.close()
                     if random.random() > 0.01:
-                        os.remove(os.path.join(save_img_path, save_name))
-                        os.remove(os.path.join(save_txt_path, save_name.replace("tif","txt")))
+                        #os.remove(os.path.join(save_edge_img_path, save_name+'_B.tif')) # edge
+                        os.remove(os.path.join(save_concat_img_path, save_name+'.tif')) # concat
+                        #os.remove(os.path.join(save_img_path, save_name+'_A.tif')) # org
+                        os.remove(os.path.join(save_txt_path, save_name+'.txt'))
 
         print('total number of labels found:', nl)
                 

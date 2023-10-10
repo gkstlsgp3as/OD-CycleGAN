@@ -82,7 +82,7 @@ Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
 
 Cfg.iou_type = 'ciou'  # 'iou', 'giou', 'diou', 'ciou', 'gaussian'
-
+Cfg.img_mode = 'vh+vv' #  'grayscale', 'vv^2+vh^2', 'vv*vh' or 'org'
 # Additional Input information and variables
 # Name of each image: S1, CSK, K5, ICEYE
 # Number of satellite image band: 1 or 3
@@ -117,7 +117,7 @@ Cfg.max = [0.15, 0.5, 50]
 #Cfg.test_txt_path='/data/objdt/Sentinel_multi_test_dataset1/*.txt'
 
 # S1 20m
-Cfg.img_path='/data/BRIDGE/yolo-rotate/data/SARDATA'
+Cfg.img_path='/data/BRIDGE/BRIDGE_sentinel1_10m'
 
 #Cfg.train_img_path='/data/objdt/Sentinel_test_dataset/'
 

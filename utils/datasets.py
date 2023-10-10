@@ -546,7 +546,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # gwang add
             img, (h0, w0), (h, w) = load_image(self, index)
             #img, (h0, w0), (h, w), img_label = load_image_label(self, index)
-
+            
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
@@ -1059,16 +1059,16 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if mosaic:
             # Load mosaic
             if random.random() < 0.8:
-                img, labels = polygon_load_mosaic(self, index)
+                img, edge, labels = polygon_load_mosaic(self, index)
             else:
-                img, labels = polygon_load_mosaic9(self, index)
+                img, edge, labels = polygon_load_mosaic9(self, index)
             shapes = None
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 if random.random() < 0.8:
-                    img2, labels2 = polygon_load_mosaic(self, random.randint(0, len(self.labels) - 1))
+                    img2, edge2, labels2 = polygon_load_mosaic(self, random.randint(0, len(self.labels) - 1))
                 else:
-                    img2, labels2 = polygon_load_mosaic9(self, random.randint(0, len(self.labels) - 1))
+                    img2, edge2, labels2 = polygon_load_mosaic9(self, random.randint(0, len(self.labels) - 1))
 
                 r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
                 img = (img * r + img2 * (1 - r)).astype(img.dtype) # original: np.uint8
@@ -1076,9 +1076,11 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
+            edge = img[:,w//0:,:]; img = img[:,:w//0,:]
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            edge, _, _ = letterbox(edge, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
             labels = self.labels[index].copy() 
             if labels.size:  # normalized format to pixel xyxyxyxy format
@@ -1087,7 +1089,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # Augment imagespace
             if not mosaic:
-                img, labels = polygon_random_perspective(img, labels,
+                img, edge, labels = polygon_random_perspective(img, edge, labels,
                                                          degrees=hyp['degrees'],
                                                          translate=hyp['translate'],
                                                          scale=hyp['scale'],
@@ -1104,14 +1106,17 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # albumentation
             img = self.albumentations(img)
+            edge = self.albumentations(edge)
             # flip up-down for all y
             if random.random() < hyp['flipud']:
                 img = np.flipud(img)
+                edge = np.flipud(edge)
                 if nL:
                     labels[:, 2::2] = 1 - labels[:, 2::2]
             # flip left-right for all x
             if random.random() < hyp['fliplr']:
                 img = np.fliplr(img)
+                edge = np.fliplr(edge)
                 if nL:
                     labels[:, 1::2] = 1 - labels[:, 1::2]
         # original label shape is (nL, 9), add one column for target image index for build_targets()
@@ -1122,7 +1127,10 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
-        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+
+        edge = edge.transpose((2, 0, 1))[::-1]
+        edge = np.ascontiguousarray(edge)
+        return torch.from_numpy(img), torch.from_numpy(edge), labels_out, self.img_files[index], shapes
 
     # Polygon does not support collate_fn4
     @staticmethod
@@ -1141,10 +1149,13 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
+        edge = img[:,w//0:,:]; img = img[:,:w//0,:]
 
         # place img in img4
         if i == 0:  # top left
             img4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            edge4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -1158,6 +1169,8 @@ def polygon_load_mosaic(self, index):
             x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
         img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        edge4[y1a:y2a, x1a:x2a] = edge[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        
         padw = x1a - x1b
         padh = y1a - y1b
 
@@ -1176,7 +1189,7 @@ def polygon_load_mosaic(self, index):
         np.clip(x, 0, 2 * s, out=x)  # inplace clip when using polygon_random_perspective()
 
     # Augment
-    img4, labels4 = polygon_random_perspective(img4, labels4, segments4,
+    img4, edge4, labels4 = polygon_random_perspective(img4, labels4, edge4, segments4,
                                                degrees=self.hyp['degrees'],
                                                translate=self.hyp['translate'],
                                                scale=self.hyp['scale'],
@@ -1185,7 +1198,7 @@ def polygon_load_mosaic(self, index):
                                                border=self.mosaic_border,
                                                mosaic=True)  # border to remove
 
-    return img4, labels4
+    return img4, edge4, labels4
 
 def polygon_load_mosaic9(self, index):
     # loads images in a 9-mosaic, with polygon boxes
@@ -1196,10 +1209,13 @@ def polygon_load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
+        edge = img[:,w//0:,:]; img = img[:,:w//0,:]
 
         # place img in img9
         if i == 0:  # center
             img9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            edge9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
+            
             h0, w0 = h, w
             c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
@@ -1238,7 +1254,8 @@ def polygon_load_mosaic9(self, index):
     # Offset
     yc, xc = [int(random.uniform(0, s)) for _ in self.mosaic_border]  # mosaic center x, y
     img9 = img9[yc:yc + 2 * s, xc:xc + 2 * s]
-
+    edge9 = edge9[yc:yc + 2 * s, xc:xc + 2 * s]
+    
     # Concat/clip labels
     labels9 = np.concatenate(labels9, 0)
     labels9[:, 1::2] -= xc
@@ -1249,7 +1266,7 @@ def polygon_load_mosaic9(self, index):
     for x in (labels9[:, 1:], *segments9):
         np.clip(x, 0, 2 * s, out=x)  # inplace clip when using polygon_random_perspective()
     # Augment
-    img9, labels9 = polygon_random_perspective(img9, labels9, segments9,
+    img9, edge9, labels9 = polygon_random_perspective(img9, labels9, edge9, segments9,
                                                degrees=self.hyp['degrees'],
                                                translate=self.hyp['translate'],
                                                scale=self.hyp['scale'],
@@ -1258,7 +1275,7 @@ def polygon_load_mosaic9(self, index):
                                                border=self.mosaic_border,
                                                mosaic=True)  # border to remove
 
-    return img9, labels9   
+    return img9, edge9, labels9   
 
 def polygon_verify_image_label(params):
     # Verify one image-label pair
@@ -1312,6 +1329,7 @@ def load_image(self, index):
         if r != 1:  # if sizes are not equal
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)),
                              interpolation=cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR)
+        
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
         return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
@@ -1502,7 +1520,7 @@ def polygon_box_candidates(box1, box2, wh_thr=3, ar_thr=20, area_thr=0.1, eps=1e
     ar = np.maximum(w2 / (h2 + eps), h2 / (w2 + eps))  # aspect ratio
     return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + eps) > area_thr) & (ar < ar_thr)  # candidates
 
-def polygon_random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
+def polygon_random_perspective(img, edge, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
                        border=(0, 0), mosaic=False):
     """
         torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
@@ -1587,8 +1605,10 @@ def polygon_random_perspective(img, targets=(), segments=(), degrees=10, transla
             if (border[0] != 0) or (border[1] != 0) or (M2 != np.eye(3)).any():  # image changed
                 if perspective:
                     img = cv2.warpPerspective(img, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                    edge = cv2.warpPerspective(edge, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 else:  # affine
                     img = cv2.warpAffine(img, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                    edge = cv2.warpAffine(edge, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 image_transformed = True
                 new = np.zeros((n, 8))
                 xy = np.ones((n * 4, 3))
@@ -1615,11 +1635,13 @@ def polygon_random_perspective(img, targets=(), segments=(), degrees=10, transla
         if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
             if perspective:
                 img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                edge = cv2.warpPerspective(edge, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             else:  # affine
                 img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                edge = cv2.warpAffine(edge, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             image_transformed = True
         
-    return img, targets
+    return img, edge, targets
 ## Augmentation ----------------------------------------------------------------------------------------------------------
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
