@@ -960,6 +960,9 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                 # verify images
                 #im = Image.open(im_file)
                 #im.verify()  # PIL verify
+                if random.random() > Cfg.skip: 
+                    ns += 1
+                    continue
                 im = cv2.imread(im_file, cv2.IMREAD_UNCHANGED)
                 if im is None:
                     raise Exception
@@ -1076,7 +1079,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
-            edge = img[:,w//0:,:]; img = img[:,:w//0,:]
+            edge = img[:,w//2:,:]; img = img[:,:w//2,:]
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
@@ -1149,7 +1152,8 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        edge = img[:,w//0:,:]; img = img[:,:w//0,:]
+        
+        edge = img[:,w//2:,:]; img = img[:,:w//2,:]
 
         # place img in img4
         if i == 0:  # top left
@@ -1209,7 +1213,7 @@ def polygon_load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        edge = img[:,w//0:,:]; img = img[:,:w//0,:]
+        edge = img[:,w//2:,:]; img = img[:,:w//2,:]
 
         # place img in img9
         if i == 0:  # center
@@ -1329,7 +1333,19 @@ def load_image(self, index):
         if r != 1:  # if sizes are not equal
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)),
                              interpolation=cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR)
-        
+        if Cfg.img_mode != 'org':
+            if Cfg.img_mode == 'vh+vv':
+                newimg = img[...,1]+img[...,2]
+            elif Cfg.img_mode == 'grayscale':
+                newimg = 0.229*img[...,0]+0.587*img[...,1]+0.114*img[...,2]
+            elif Cfg.img_mode == 'vv^2+vh^2':
+                newimg = img[...,1]**2 +img[...,2]**2
+            elif Cfg.img_mode == 'vv*vh':
+                newimg = img[...,1]*img[...,2]
+            img = np.dstack((newimg, newimg, newimg))
+            if img.max() != 0:
+                img = (img - img.min()) / (img.max() - img.min())
+                
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
         return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized

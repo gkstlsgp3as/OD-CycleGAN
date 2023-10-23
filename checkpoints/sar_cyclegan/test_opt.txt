@@ -1,0 +1,81 @@
+----------------- Options ---------------
+                     adam: True                          	[default: False]
+           artifact_alias: latest                        
+             aspect_ratio: 1.0                           
+               batch_size: 16                            	[default: 1]
+            bbox_interval: -1                            
+                   bucket:                               
+             cache_images: True                          	[default: False]
+                      cfg: poly_yolov7.yaml              	[default: yolov7.yaml]
+          checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan	[default: ./checkpoints]
+                crop_size: 640                           
+                data_file: sentinel.yaml                 	[default: data/sentinel.yaml]
+                 dataroot: ./data/images/sentinel/gan    	[default: None]
+             dataset_mode: unaligned                     
+                direction: AtoB                          
+          display_winsize: 256                           
+                   divide: False                         
+                   entity: None                          
+                    epoch: latest                        
+                   epochs: 300                           
+                     eval: False                         
+                   evolve: False                         
+                 exist_ok: False                         
+                 exp_name: sar                           	[default: experiment_name]
+                   freeze: [0]                           
+                      gan: False                         
+                  gpu_ids: 2,3                           	[default: 0]
+                      hyp: hyp.scratch.custom.yaml       	[default: data/hyp.scratch.p5.yaml]
+            image_weights: False                         
+                 img_size: [640]                         	[default: 640]
+                init_gain: 0.02                          
+                init_type: normal                        
+                 input_nc: 3                             
+                  isTrain: False                         	[default: None]
+          label_smoothing: 0.1                           	[default: 0.0]
+                linear_lr: False                         
+                load_iter: 0                             	[default: 0]
+                load_size: 640                           
+               local_rank: -1                            
+         max_dataset_size: inf                           
+                    model: cycle_gan                     	[default: test]
+              multi_scale: False                         
+               n_layers_D: 3                             
+                     name: exp                           
+                      ndf: 64                            
+                     netD: basic                         
+                     netG: resnet_9blocks                
+                      ngf: 64                            
+               no_dropout: True                          
+                  no_flip: False                         
+             noautoanchor: False                         
+                     norm: instance                      
+                   nosave: False                         
+                   notest: False                         
+                 num_test: 50                            
+              num_threads: 4                             
+                output_nc: 3                             
+                    phase: test                          
+                  polygon: True                          	[default: False]
+               preprocess: resize_and_crop               
+                  project: runs/train                    
+                     quad: False                         
+                     rect: False                         
+              results_dir: ./results/                    
+                   resume: False                         
+              save_period: -1                            
+           serial_batches: False                         
+                 shp_path: /data/BRIDGE/cycleGAN/data/landmask/landline_mid/
+               single_cls: False                         
+                   subset:                               
+                   suffix:                               
+                  sync_bn: False                         
+                   target: BRIDG                         
+           upload_dataset: False                         
+                use_wandb: False                         
+                  verbose: False                         
+       wandb_project_name: CycleGAN-and-pix2pix          
+                   warmup: 100                           
+                  weights:                               
+                  workers: 8                             
+----------------- End -------------------

@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 import os
-
+import torchvision.transforms as transforms
 
 def tensor2im(input_image, imtype=np.uint8):
     """"Converts a Tensor array into a numpy image array.
@@ -101,3 +101,9 @@ def mkdir(path):
     """
     if not os.path.exists(path):
         os.makedirs(path)
+
+def getTransforms():
+    t_list = []
+    t_list.append(transforms.ToTensor())
+    t_list.append(transforms.Normalize((0.5,0.5,0.5),(0.5,0.5,0.5)))
+    return transforms.Compose(t_list)

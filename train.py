@@ -40,9 +40,12 @@ from utils.gdal_preprocess import split_set, make_lists
 
 # GAN
 from options.train_options import TrainOptions
+#from options.test_options import TestOptions
 from data.gan_data import create_dataset
 from models.gan import create_model
-from utils.gan_utils.visualizer import Visualizer
+#from utils.gan_utils.visualizer import Visualizer
+
+from utils.gan_utils import util
 
 logger = logging.getLogger(__name__) # generate logger 
 print (os.path.dirname(__file__))
@@ -72,8 +75,15 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
-    with open(opt.data) as f:
+    with open(opt.data_file) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+
+    # GAN
+    #gan_dataset = create_dataset(opt)  
+    #print('The number of training images = %d' % len(gan_dataset)) # get the number of images in the dataset.
+    gan_model = create_model(opt)    
+    gan_model.setup(opt)
+    #gan_visualizer = Visualizer(opt)
 
     # Logging- Doing this before checking the dataset. Might update data_dict
     loggers = {'wandb': None}  # loggers dict
@@ -87,10 +97,10 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             weights, epochs, hyp = opt.weights, opt.epochs, opt.hyp  # WandbLogger might update weights, epochs if resuming
 
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
-    is_coco = opt.data.endswith('coco.yaml') and nc == 80  # COCO dataset
+    is_coco = opt.data_file.endswith('coco.yaml') and nc == 80  # COCO dataset
     
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
-    assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
+    assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data_file)  # check
     colors = set_colors(names, opt.target)
 
     # Model
@@ -110,13 +120,6 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     else:
         
         model = model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
-
-    # GAN
-    #gan_dataset = create_dataset(opt)  
-    #print('The number of training images = %d' % len(gan_dataset)) # get the number of images in the dataset.
-    gan_model = create_model(opt)    
-    gan_model.setup(opt)
-    gan_visualizer = Visualizer(opt)
 
     # gwang add
     with torch_distributed_zero_first(rank):
@@ -276,7 +279,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     breakpoint()
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
-    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
+    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data_file, nc - 1)
     
     # Process 0
     if rank in [-1, 0]:
@@ -344,6 +347,9 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 f'Logging results to {save_dir}\n'
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
+
+    trans = util.getTransforms()
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -378,7 +384,12 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             #imgs, targets, paths, _ = next(iter(dataloader))
             #i, (imgs, targets, paths, _) = next(iter(pbar))
             ni = i + nb * epoch  # number integrated batches (since train start)
+            #imgs = edges ## please notice this 
+            breakpoint()
             imgs = imgs.to(device, non_blocking=True).float()# / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+            
+            #gan_imgs = np.dstack(trans(imgs)); gan_imgs = 
+
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -548,7 +559,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         logger.info('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
         if is_coco:  # if COCO
             for m in (last, best) if best.exists() else (last):  # speed, mAP tests
-                results, _, _ = poly_test.test(opt.data,
+                results, _, _ = poly_test.test(opt.data_file,
                                           batch_size=batch_size * 2,
                                           imgsz=imgsz_test,
                                           conf_thres=0.001,
@@ -582,7 +593,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()
-    
+    #opt = TestOptions().parse()
+    print(opt)
     # Set DDP variables; Distributed Data Parallel 
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1 # total number of gpus
     opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1 # gpu number 
@@ -593,7 +605,8 @@ if __name__ == '__main__':
     #    check_requirements()
 
     from utils.cfg import Cfg
-    datatype = opt.data[:-5]
+    datatype = opt.data_file[:-5]
+    
     if opt.divide:
         split_set(opt.img_size[0], datatype=datatype, source=opt.mode, polygon=opt.polygon, shp_path=opt.shp_path)
     
@@ -602,7 +615,7 @@ if __name__ == '__main__':
     
     if len(os.listdir(dataset_path))==0:
         print("main makelists")
-        make_lists(datatype=opt.data[:-5], source=opt.mode, subset='') # subset = {'', 'A', 'B} 
+        make_lists(datatype=opt.data_file[:-5], source=opt.mode, subset='') # subset = {'', 'A', 'B} 
     
     # Hyperparameters
     opt.hyp  = check_file(opt.hyp)
@@ -623,7 +636,7 @@ if __name__ == '__main__':
         logger.info('Resuming training from %s' % ckpt) # get output
     else:
         # opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
-        opt.data, opt.cfg, opt.hyp, opt.weights = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp), check_file(opt.weights)  # check files
+        opt.data_file, opt.cfg, opt.hyp, opt.weights = check_file(opt.data_file), check_file(opt.cfg), check_file(opt.hyp), check_file(opt.weights)  # check files
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified' # if either file is not specified, the message generated 
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test); append elements of iterables -> [512] > [512, 512]
         opt.name = 'evolve' if opt.evolve else opt.name
