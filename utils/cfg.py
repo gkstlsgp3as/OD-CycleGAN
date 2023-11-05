@@ -83,10 +83,11 @@ Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
 
 Cfg.iou_type = 'ciou'  # 'iou', 'giou', 'diou', 'ciou', 'gaussian'
-Cfg.img_mode = 'vh+vv' #  'grayscale', 'vv^2+vh^2', 'vv*vh' or 'org'
+Cfg.img_mode = 'vv+vh' #  'grayscale', 'vv^2+vh^2', 'vv*vh' or 'org'
 # Additional Input information and variables
 # Name of each image: S1, CSK, K5, ICEYE
 # Number of satellite image band: 1 or 3
+Cfg.input_ch = 6
 Cfg.Satellite = 'S1'
 Cfg.Satelliteband = 3
 Cfg.division = 40 # K5: 10, S1: 15, 20 15
@@ -127,9 +128,9 @@ Cfg.valid_txt_path='./data/labels/sentinel/valid/*.txt'
 Cfg.test_txt_path='./data/labels/sentinel/test/*.txt'
 
 # train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
-Cfg.train='./data/org/sentinel/horz/train.txt'  # 2978 images
-Cfg.valid='./data/org/sentinel/horz/valid.txt'  # 235 images
-Cfg.test='./data/org/sentinel/horz/test.txt'  # 235 images
+Cfg.train='./data/org/sentinel/sar/train.txt'  # 2978 images
+Cfg.valid='./data/org/sentinel/sar/valid.txt'  # 235 images
+Cfg.test='./data/org/sentinel/sar/test.txt'  # 235 images
 
 # number of classes
 Cfg.nc=3

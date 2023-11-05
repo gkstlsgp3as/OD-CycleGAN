@@ -968,6 +968,7 @@ def polygon_inter_union(boxes1, boxes2):
         Boxes have shape nx8 and Anchors have mx8;
         Return intersection and union of boxes[i, :] and anchors[j, :] with shape of (n, m).
     """
+    #from shapely.validation import make_valid
     n, m = boxes1.shape[0], boxes2.shape[0]
     inter = torch.zeros(n, m)
     union = torch.zeros(n, m)
@@ -989,7 +990,7 @@ def polygon_b_inter_union(boxes1, boxes2):
         Boxes and Anchors having the same shape: nx8;
         Return intersection and union of boxes[i, :] and anchors[i, :] with shape of (n, ).
     """
-
+    #from shapely.validation import make_valid
     n = boxes1.shape[0]
     inter = torch.zeros(n,)
     union = torch.zeros(n,)
@@ -1026,7 +1027,7 @@ def polygon_scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
     polygon_clip_coords(coords, img0_shape)  # inplace operation
     return coords
 
-def polygon_bbox_iou(boxes1, boxes2, iou_type='ciou', eps=1e-7, ordered=False, constant=12.8):
+def polygon_bbox_iou(boxes1, boxes2, iou_type='ciou', eps=1e-7, ordered=False, constant=12.8, device=None):
     """
         Compute iou of polygon boxes for class Polygon_ComputeLoss in loss.py via cpu or cuda;
         For cuda code, please refer to files in ./iou_cuda
@@ -1038,11 +1039,11 @@ def polygon_bbox_iou(boxes1, boxes2, iou_type='ciou', eps=1e-7, ordered=False, c
         boxes1, boxes2 = boxes1.clone(), boxes2.clone()
     
     if boxes1.is_cuda:
-        boxes1_ = boxes1.float().contiguous()
-        boxes2_ = boxes2.float().contiguous()
+        #boxes1_ = boxes1.float().contiguous()
+        #boxes2_ = boxes2.float().contiguous()
         # using shapely (cpu) to compute
         if iou_type != 'gaussian':
-            inter, union = polygon_b_inter_union(boxes1_, boxes2_)
+            inter, union = polygon_b_inter_union(boxes1, boxes2)
     
     if iou_type != 'gaussian':
         union += eps
@@ -1081,7 +1082,7 @@ def polygon_bbox_iou(boxes1, boxes2, iou_type='ciou', eps=1e-7, ordered=False, c
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
                 
                 with torch.no_grad():
-                    iou = iou.cuda()
+                    iou = iou.to(device)
                     alpha = v / (v - iou + (1 + eps))
                 iou -= (rho2 / c2 + v * alpha)  # CIoU
         elif GaIoU: 

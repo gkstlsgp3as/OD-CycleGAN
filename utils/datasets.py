@@ -24,6 +24,8 @@ from utils.torch_utils import torch_distributed_zero_first
 from osgeo import gdal, ogr, osr
 from utils.cfg import Cfg
 
+# GAN
+
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
@@ -58,7 +60,7 @@ def exif_size(img):
     return s
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', polygon=False):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', polygon=False, gan_model=None):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         LoadModels = LoadImagesAndLabels if not polygon else Polygon_LoadImagesAndLabels
@@ -72,7 +74,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       pad=pad,
                                       image_weights=image_weights,
                                       prefix=prefix,
-                                      yaml_file=path.split('/')[3]+'.yaml')
+                                      yaml_file=path.split('/')[3]+'.yaml', 
+                                      gan_model=gan_model)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -831,7 +834,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         Polygon_LoadImagesAndLabels for polygon boxes
     """
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', yaml_file = 'sentinel.yaml'):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', yaml_file = 'sentinel.yaml', gan_model=None):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -841,6 +844,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path
+        self.gan_model = gan_model
         
         import yaml
         with open('./data/{}'.format(yaml_file), errors='ignore') as f:
@@ -939,27 +943,52 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
+        self.gan_imgs = [None] * n
         if cache_images:
             gb = 0  # Gigabytes of cached images
             self.img_hw0, self.img_hw = [None] * n, [None] * n
             results = ThreadPool(num_threads).imap(lambda x: load_image(*x), zip(repeat(self), range(n)))
             pbar = tqdm(enumerate(results), total=n)
             for i, x in pbar:
-                self.imgs[i], self.img_hw0[i], self.img_hw[i] = x  # img, hw_original, hw_resized = load_image(self, i)
-                gb += self.imgs[i].nbytes
+                img, self.img_hw0[i], self.img_hw[i] = x  # img, hw_original, hw_resized = load_image(self, i)
+                #im, self.img_hw0[i], self.img_hw[i] = x
+                self.gan_imgs[i] = np.array(self.gan_infer(img), np.float16)
+                self.imgs[i] = np.array(img, np.float16)
+                
+                gb += self.gan_imgs[i].nbytes
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
+
+    '''
+    im = util.tensor2im(im)
+    gan_out = gan_model.to_image(im) # 640, 640, 3
+    gan_out = (gan_out-np.min(gan_out))/(np.max(gan_out)-np.min(gan_out))
+    from tifffile import imwrite
+    imwrite('./data/gan_out.tif', gan_out)
+
+    ''' 
+    def gan_infer(self, img):
+        from utils.gan_utils import util
+        trans = util.getTransforms()
+
+        gan_img = trans(img); gan_img = torch.unsqueeze(gan_img, 0)
+        self.gan_model.inferenceA2B(gan_img)
+        gan_img = self.gan_model.to_image(self.gan_model.fake_B)
+        
+        return (gan_img - np.min(gan_img)) / (np.max(gan_img) - np.min(gan_img))
+
 
     def cache_labels(self, path=Path('./labels.cache'), prefix=''):
         # Cache dataset labels, check images and read shapes
         x = {}  # dict
-        nm, nf, ne, nc = 0, 0, 0, 0  # number missing, found, empty, corrupt
+        nm, nf, ne, nc, ns = 0, 0, 0, 0, 0  # number missing, found, empty, corrupt
         pbar = tqdm(zip(self.img_files, self.label_files), desc='Scanning images', total=len(self.img_files))
         for i, (im_file, lb_file) in enumerate(pbar):
             try:
                 # verify images
                 #im = Image.open(im_file)
                 #im.verify()  # PIL verify
+                
                 if random.random() > Cfg.skip: 
                     ns += 1
                     continue
@@ -971,10 +1000,9 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                 segments = []  # instance segments
                 assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
                 assert im_file.split('/')[-1].split('.')[-1] in img_formats, f'invalid image format {im.format}'
-            
+                
                 # verify labels
                 if os.path.isfile(lb_file):
-                    
                     nf += 1  # label found
                     with open(lb_file, 'r') as f:
                         # l = [x.split() for x in f.read().strip().splitlines()]
@@ -984,7 +1012,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                         l_ = []
                         for label in labels:
                             cls_id = self.cls_names.index(label[0])
-                            l_.append(np.concatenate((cls_id, label[1:]), axis=None))
+                            l_.append(np.concatenate((str(cls_id), label[1:]), axis=None))
                         l = np.array(l_, dtype=np.float32)
                     
                     nl = len(l)
@@ -1031,7 +1059,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                 print(f'{prefix}WARNING: Ignoring corrupted image and/or label {im_file}: {e}')
             
             pbar.desc = f"{prefix}Scanning '{path.parent / path.stem}' images and labels... " \
-                    f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+                    f"{nf} found, {nm} missing, {ne} empty, {nc} corrupted, {ns} skipped"
         pbar.close()
        
         if nf == 0:
@@ -1062,16 +1090,16 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if mosaic:
             # Load mosaic
             if random.random() < 0.8:
-                img, edge, labels = polygon_load_mosaic(self, index)
+                img, gan_img, labels = polygon_load_mosaic(self, index)
             else:
-                img, edge, labels = polygon_load_mosaic9(self, index)
+                img, gan_img, labels = polygon_load_mosaic9(self, index)
             shapes = None
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 if random.random() < 0.8:
-                    img2, edge2, labels2 = polygon_load_mosaic(self, random.randint(0, len(self.labels) - 1))
+                    img2, gan_img2, labels2 = polygon_load_mosaic(self, random.randint(0, len(self.labels) - 1))
                 else:
-                    img2, edge2, labels2 = polygon_load_mosaic9(self, random.randint(0, len(self.labels) - 1))
+                    img2, gan_img2, labels2 = polygon_load_mosaic9(self, random.randint(0, len(self.labels) - 1))
 
                 r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
                 img = (img * r + img2 * (1 - r)).astype(img.dtype) # original: np.uint8
@@ -1079,11 +1107,11 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
-            edge = img[:,w//2:,:]; img = img[:,:w//2,:]
+            gan_img = self.gan_imgs[index] # self.gan_infer(img)#
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-            edge, _, _ = letterbox(edge, shape, auto=False, scaleup=self.augment)
+            gan_img, _, _ = letterbox(gan_img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
             labels = self.labels[index].copy() 
             if labels.size:  # normalized format to pixel xyxyxyxy format
@@ -1092,7 +1120,8 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # Augment imagespace
             if not mosaic:
-                img, edge, labels = polygon_random_perspective(img, edge, labels,
+                img = np.array(img, np.float32); gan_img = np.array(gan_img, np.float32)
+                img, gan_img, labels = polygon_random_perspective(img, gan_img, labels,
                                                          degrees=hyp['degrees'],
                                                          translate=hyp['translate'],
                                                          scale=hyp['scale'],
@@ -1109,17 +1138,17 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # albumentation
             img = self.albumentations(img)
-            edge = self.albumentations(edge)
+            gan_img = self.albumentations(gan_img)
             # flip up-down for all y
             if random.random() < hyp['flipud']:
                 img = np.flipud(img)
-                edge = np.flipud(edge)
+                gan_img = np.flipud(gan_img)
                 if nL:
                     labels[:, 2::2] = 1 - labels[:, 2::2]
             # flip left-right for all x
             if random.random() < hyp['fliplr']:
                 img = np.fliplr(img)
-                edge = np.fliplr(edge)
+                gan_img = np.flipud(gan_img)
                 if nL:
                     labels[:, 1::2] = 1 - labels[:, 1::2]
         # original label shape is (nL, 9), add one column for target image index for build_targets()
@@ -1130,10 +1159,12 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         # Convert
         img = img.transpose((2, 0, 1))[::-1]  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
+        gan_img = gan_img.transpose((2, 0, 1))[::-1]  # BGR to RGB, to 3x416x416
+        gan_img = np.ascontiguousarray(gan_img)
 
-        edge = edge.transpose((2, 0, 1))[::-1]
-        edge = np.ascontiguousarray(edge)
-        return torch.from_numpy(img), torch.from_numpy(edge), labels_out, self.img_files[index], shapes
+        img_all = np.concatenate((img, gan_img), axis=0)
+
+        return torch.from_numpy(img_all), labels_out, self.img_files[index], shapes
 
     # Polygon does not support collate_fn4
     @staticmethod
@@ -1141,7 +1172,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         img, label, path, shapes = zip(*batch)  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
-        return torch.stack(img, 0), torch.cat(label, 0), path, shapes
+        return torch.stack(img, 0),torch.cat(label, 0), path, shapes
     
 def polygon_load_mosaic(self, index):
     # loads images in a 4-mosaic, with polygon boxes
@@ -1152,14 +1183,12 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        
-        edge = img[:,w//2:,:]; img = img[:,:w//2,:]
+        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img4
         if i == 0:  # top left
             img4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
-            edge4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
-            
+            gan4 = np.full((s * 2, s * 2, img.shape[2]), 0.45, dtype=img.dtype)
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -1173,7 +1202,7 @@ def polygon_load_mosaic(self, index):
             x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
         img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-        edge4[y1a:y2a, x1a:x2a] = edge[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        gan4[y1a:y2a, x1a:x2a] = gan_img[y1b:y2b, x1b:x2b] 
         
         padw = x1a - x1b
         padh = y1a - y1b
@@ -1191,9 +1220,9 @@ def polygon_load_mosaic(self, index):
     labels4 = np.concatenate(labels4, 0)
     for x in (labels4[:, 1:], *segments4):
         np.clip(x, 0, 2 * s, out=x)  # inplace clip when using polygon_random_perspective()
-
+    img4 = np.array(img4, np.float32); gan4 = np.array(gan4, np.float32)
     # Augment
-    img4, edge4, labels4 = polygon_random_perspective(img4, labels4, edge4, segments4,
+    img4, gan4, labels4 = polygon_random_perspective(img4, gan4, labels4, segments4,
                                                degrees=self.hyp['degrees'],
                                                translate=self.hyp['translate'],
                                                scale=self.hyp['scale'],
@@ -1202,7 +1231,7 @@ def polygon_load_mosaic(self, index):
                                                border=self.mosaic_border,
                                                mosaic=True)  # border to remove
 
-    return img4, edge4, labels4
+    return img4, gan4, labels4
 
 def polygon_load_mosaic9(self, index):
     # loads images in a 9-mosaic, with polygon boxes
@@ -1213,13 +1242,12 @@ def polygon_load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        edge = img[:,w//2:,:]; img = img[:,:w//2,:]
+        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img9
         if i == 0:  # center
             img9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
-            edge9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)  # base image with 4 tiles; original: np.uint8
-            
+            gan9 = np.full((s * 3, s * 3, img.shape[2]), 0.45, dtype=img.dtype)
             h0, w0 = h, w
             c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
@@ -1253,12 +1281,13 @@ def polygon_load_mosaic9(self, index):
 
         # Image
         img9[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
+        gan9[y1:y2, x1:x2] = gan_img[y1 - pady:, x1 - padx:] 
         hp, wp = h, w  # height, width previous
 
     # Offset
     yc, xc = [int(random.uniform(0, s)) for _ in self.mosaic_border]  # mosaic center x, y
     img9 = img9[yc:yc + 2 * s, xc:xc + 2 * s]
-    edge9 = edge9[yc:yc + 2 * s, xc:xc + 2 * s]
+    gan9 = gan9[yc:yc + 2 * s, xc:xc + 2 * s]
     
     # Concat/clip labels
     labels9 = np.concatenate(labels9, 0)
@@ -1270,7 +1299,8 @@ def polygon_load_mosaic9(self, index):
     for x in (labels9[:, 1:], *segments9):
         np.clip(x, 0, 2 * s, out=x)  # inplace clip when using polygon_random_perspective()
     # Augment
-    img9, edge9, labels9 = polygon_random_perspective(img9, labels9, edge9, segments9,
+    img9 = np.array(img9, np.float32); gan9 = np.array(gan9, np.float32)
+    img9, gan9, labels9 = polygon_random_perspective(img9, gan9, labels9, segments9,
                                                degrees=self.hyp['degrees'],
                                                translate=self.hyp['translate'],
                                                scale=self.hyp['scale'],
@@ -1279,7 +1309,7 @@ def polygon_load_mosaic9(self, index):
                                                border=self.mosaic_border,
                                                mosaic=True)  # border to remove
 
-    return img9, edge9, labels9   
+    return img9, gan9, labels9   
 
 def polygon_verify_image_label(params):
     # Verify one image-label pair
@@ -1334,7 +1364,7 @@ def load_image(self, index):
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)),
                              interpolation=cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR)
         if Cfg.img_mode != 'org':
-            if Cfg.img_mode == 'vh+vv':
+            if Cfg.img_mode == 'vv+vh':
                 newimg = img[...,1]+img[...,2]
             elif Cfg.img_mode == 'grayscale':
                 newimg = 0.229*img[...,0]+0.587*img[...,1]+0.114*img[...,2]
@@ -1536,7 +1566,7 @@ def polygon_box_candidates(box1, box2, wh_thr=3, ar_thr=20, area_thr=0.1, eps=1e
     ar = np.maximum(w2 / (h2 + eps), h2 / (w2 + eps))  # aspect ratio
     return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + eps) > area_thr) & (ar < ar_thr)  # candidates
 
-def polygon_random_perspective(img, edge, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
+def polygon_random_perspective(img, gan_img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
                        border=(0, 0), mosaic=False):
     """
         torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
@@ -1621,10 +1651,10 @@ def polygon_random_perspective(img, edge, targets=(), segments=(), degrees=10, t
             if (border[0] != 0) or (border[1] != 0) or (M2 != np.eye(3)).any():  # image changed
                 if perspective:
                     img = cv2.warpPerspective(img, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
-                    edge = cv2.warpPerspective(edge, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                    gan_img = cv2.warpPerspective(gan_img, M2, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 else:  # affine
                     img = cv2.warpAffine(img, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
-                    edge = cv2.warpAffine(edge, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                    gan_img = cv2.warpAffine(gan_img, M2[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
                 image_transformed = True
                 new = np.zeros((n, 8))
                 xy = np.ones((n * 4, 3))
@@ -1651,13 +1681,13 @@ def polygon_random_perspective(img, edge, targets=(), segments=(), degrees=10, t
         if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
             if perspective:
                 img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
-                edge = cv2.warpPerspective(edge, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                gan_img = cv2.warpPerspective(gan_img, M, dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             else:  # affine
                 img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
-                edge = cv2.warpAffine(edge, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
+                gan_img = cv2.warpAffine(gan_img, M[:2], dsize=(width, height), borderValue=(0.45, 0.45, 0.45))
             image_transformed = True
         
-    return img, edge, targets
+    return img, gan_img, targets
 ## Augmentation ----------------------------------------------------------------------------------------------------------
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):

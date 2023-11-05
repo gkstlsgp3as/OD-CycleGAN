@@ -210,7 +210,7 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True, shp
     import pandas as pd
     import random
     
-    for i, div_set in enumerate(['train', 'valid', 'test', 'trainA', 'validA', 'testA', 'trainB', 'validB', 'testB']):
+    for i, div_set in enumerate(['train', 'valid', 'test']):#, 'trainA', 'validA', 'testA', 'trainB', 'validB', 'testB']):
         os.makedirs('./data/images/{}/{}/{}'.format(datatype, source, div_set), exist_ok=True)
         
         if i < 3:
@@ -231,15 +231,14 @@ def split_set(img_size=640, datatype='sentinel', source='org', polygon=True, shp
     ## image division for train and valid dataset
     origin_image_folder = Cfg.img_path
     #f = open('./data/div_{}.txt'.format(str(div_num)), 'w')
-    
     division = division_set_poly if polygon else division_set
     
-    bounds = get_lonlat(shp_path)
+    #bounds = get_lonlat(shp_path)
     #lyrs = landmask(shp_path)
 
-    division(valid_set, origin_image_folder, 'valid', datatype, img_size, source, shp_path, bounds)
-    division(train_set, origin_image_folder, 'train', datatype, img_size, source, shp_path, bounds)
-    division(test_set, origin_image_folder, 'test', datatype, img_size, source, shp_path, bounds)
+    division(valid_set, origin_image_folder, 'valid', datatype, img_size, source, shp_path)#, bounds)
+    division(train_set, origin_image_folder, 'train', datatype, img_size, source, shp_path)#, bounds)
+    division(test_set, origin_image_folder, 'test', datatype, img_size, source, shp_path)#, bounds)
 
 def make_lists(datatype='sentinel', source='org', subset=''):
     
@@ -275,15 +274,117 @@ def return_shpidx(bounds, tif_bounds):
     #https://minimin2.tistory.com/144
     return idx
 
-# 이미지를 분할하고 각 이미지의 bbox 정보를 분활된 이미지에 맞게 변환
 def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentinel', img_size=640, source='org', shp_path='', bounds=None):    
     from utils.cfg import Cfg
     from utils.general import order_corners
     import torch
-    from utils.gdal_preprocess import line_detection
     import random
     
     print("Start dividing images for polygon\n\n")
+    for i in image_list:
+        last_name = i.split('_')[-3]
+        image_path = os.path.join(origin_image_folder, i)
+        
+        bandnumber = Cfg.Satelliteband
+
+        # rasterizing landlines shapefile
+        print("Opening: ", image_path)    
+        
+        # RGB로 변환
+        if Cfg.NewTest == 0:
+            rgb_image = band_to_input(image_path, bandnumber)
+        else:
+            rgb_image = band_to_input(image_path, bandnumber,True)
+        print("Opened: ", image_path)
+        # x, y, w, h를 x1, y1, x2, y2로 변환
+        image_df = pd.read_csv(image_path.replace("tif", "txt"), names=['class','X1','Y1','X2','Y2','X3','Y3','X4','Y4'])
+        image_df['class'] = [col.lower().strip() for col in image_df['class'].to_numpy() if isinstance(col, str)]
+        
+        bboxes = image_df[['X1', 'Y1', 'X2', 'Y2', 'X3', 'Y3', 'X4', 'Y4', 'class']].to_numpy()
+        coords = bboxes[:,:-1];  classes =  bboxes[:,-1]
+        coords = order_corners(torch.Tensor(np.array(coords, dtype=np.float64)))      
+        bboxes = np.hstack([np.array(coords), classes.reshape(-1,1)])
+        # 분할 구간 설정
+        h, w = rgb_image.shape[:2]
+
+        hd = [x for x in range(0, h, img_size-Cfg.overlap)]
+        wd = [x for x in range(0, w, img_size-Cfg.overlap)]
+        hd[-1] = h - img_size; wd[-1] = w - img_size
+        hd.sort(); wd.sort()
+        nl = 0  
+        
+        for h_id, div_h in enumerate(hd[:-1]):
+            for w_id, div_w in enumerate(wd[:-1]):
+                # 분할된 이미지의 좌표
+                x1, y1 = div_w, div_h
+                x2, y2 = div_w+img_size, div_h+img_size
+                
+                # 이미지 크롭
+                crop = rgb_image[y1:y2, x1:x2]
+                
+                # ignore where shpfile is not fully matched
+                if (crop==0).all():
+                    continue
+                
+                div_boxes = []
+                save_name = str(x1) + '_' + str(y1) + '_' + str(x2) + '_' + str(y2) + '_' + last_name 
+                line = save_name
+                
+                save_txt_path = './data/labels/{}/{}/{}/'.format(datatype, source, div_set)
+                save_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set)#+'A')
+                
+                f = open(os.path.join(save_txt_path, save_name+'.txt'), 'w')
+                
+                for b in bboxes:
+                    # 현재 분할된 이미지의 x, y 구간 
+                    
+                    min_x = np.min(b[0:-1:2]); max_x = np.max(b[0:-1:2])
+                    min_y = np.min(b[1:-1:2]); max_y = np.max(b[1:-1:2])
+                    
+                    if (x1 <= min_x <= x2) and (x1 <= max_x <= x2) and \
+                        (y1 <= min_y <= y2) and (y1 <= max_y <= y2):
+
+                        dw = (x2-x1); dh = (y2-y1) #dw = (x2-x1)*2; dh = (y2-y1)*2
+                            
+                        image_coord = [(c-x1)/dw if i%2==0 else (c-y1)/dh for i,c in enumerate(b[:-1])]
+                            
+                        bbox = np.hstack([b[8], image_coord]) #cls, center_x, center_y, width, height
+                        #print([b[4], centx, centy, (dx2-dx1), (dy2-dy1)])
+                        #print(dw, dh)
+                            
+                        div_boxes.append(bbox)  
+                        nl += 1          
+                
+                imwrite(os.path.join(save_img_path, save_name+'.tif'),crop) # _A
+                
+                if len(div_boxes) > 0:
+                    print('saved: ',os.path.join(save_txt_path, save_name+'.txt'))
+                    
+                    for d in div_boxes:
+                        #class_name = 'ship' if strd[4]==0 else 'other'
+                        f.write('%s %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n' % (d[0], float(d[1]), float(d[2]), \
+                                                                                  float(d[3]), float(d[4]), float(d[5]), \
+                                                                                      float(d[6]), float(d[7]), float(d[8])))
+                    f.close()
+                else: 
+                    print('no bboxes found: ',os.path.join(save_txt_path, save_name))
+                    f.close()
+                    if random.random() > 0.01:
+                        os.remove(os.path.join(save_img_path, save_name+'.tif')) # org; _A
+                        os.remove(os.path.join(save_txt_path, save_name+'.txt'))
+
+        print('total number of labels found:', nl)
+
+# 이미지를 분할하고 각 이미지의 bbox 정보를 분활된 이미지에 맞게 변환
+def division_set_rasterize(image_list, origin_image_folder, div_set, datatype='sentinel', img_size=640, source='org', shp_path='', bounds=None):    
+    from utils.cfg import Cfg
+    from utils.general import order_corners
+    import torch
+    import random
+    
+    print("Start dividing images for polygon\n\n")
+    if div_set == 'train':
+        image_list=image_list[30:]
     for i in image_list:
         last_name = i.split('_')[-3]
         image_path = os.path.join(origin_image_folder, i)
@@ -367,7 +468,7 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                 line = save_name
                 
                 save_txt_path = './data/labels/{}/{}/{}/'.format(datatype, source, div_set)
-                save_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set+'A')
+                save_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set)#+'A')
                 save_concat_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set)
                 save_edge_img_path = './data/images/{}/{}/{}/'.format(datatype, source, div_set+'B')
                 
@@ -398,8 +499,12 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                 #crop = cv2.resize(crop, dsize=(img_size, img_size), interpolation=cv2.INTER_AREA)
                 concat = cv2.hconcat([crop, land_crop])
                 #imwrite(os.path.join(save_edge_img_path, save_name+'_B.tif'), land_crop)
-                imwrite(os.path.join(save_concat_img_path, save_name+'.tif'), concat)
-                #imwrite(os.path.join(save_img_path, save_name+'_A.tif'),crop)
+                #imwrite(os.path.join(save_concat_img_path, save_name+'.tif'), concat)
+                try:
+                    imwrite(os.path.join(save_img_path, save_name+'.tif'),crop) # _A
+                except:
+                    os.remove(os.path.join(save_txt_path, save_name+'.txt'))
+                    continue
                 #cv2.imwrite(os.path.join(save_img_path, save_name), crop)
                 if len(div_boxes) > 0:
                     print('saved: ',os.path.join(save_txt_path, save_name+'.txt'))
@@ -415,8 +520,8 @@ def division_set_poly(image_list, origin_image_folder, div_set, datatype='sentin
                     f.close()
                     if random.random() > 0.01:
                         #os.remove(os.path.join(save_edge_img_path, save_name+'_B.tif')) # edge
-                        os.remove(os.path.join(save_concat_img_path, save_name+'.tif')) # concat
-                        #os.remove(os.path.join(save_img_path, save_name+'_A.tif')) # org
+                        #os.remove(os.path.join(save_concat_img_path, save_name+'.tif')) # concat
+                        os.remove(os.path.join(save_img_path, save_name+'.tif')) # org; _A
                         os.remove(os.path.join(save_txt_path, save_name+'.txt'))
 
         print('total number of labels found:', nl)

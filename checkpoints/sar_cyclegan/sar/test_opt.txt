@@ -5,13 +5,13 @@
                batch_size: 16                            	[default: 1]
             bbox_interval: -1                            
                    bucket:                               
-             cache_images: True                          	[default: False]
-                      cfg: poly_yolov7.yaml              	[default: yolov7.yaml]
-          checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan	[default: ./checkpoints]
+             cache_images: False                         
+                      cfg: poly_yolov7_transformer.yaml  	[default: yolov7.yaml]
+          checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan/sar	[default: ./checkpoints]
                 crop_size: 640                           
                 data_file: sentinel.yaml                 	[default: data/sentinel.yaml]
                  dataroot: ./data/images/sentinel/gan    	[default: None]
-             dataset_mode: unaligned                     
+             dataset_mode: aligned                       	[default: unaligned]
                 direction: AtoB                          
           display_winsize: 256                           
                    divide: False                         
@@ -23,8 +23,9 @@
                  exist_ok: False                         
                  exp_name: experiment_name               
                    freeze: [0]                           
+                   fusion: early                         
                       gan: False                         
-                  gpu_ids: 2,3                           	[default: 0]
+                  gpu_ids: 0,1                           	[default: 0]
                       hyp: hyp.scratch.custom.yaml       	[default: data/hyp.scratch.p5.yaml]
             image_weights: False                         
                  img_size: [640]                         	[default: 640]
@@ -65,7 +66,7 @@
                    resume: False                         
               save_period: -1                            
            serial_batches: False                         
-                 shp_path: /data/BRIDGE/cycleGAN/data/landmask/landline_mid/
+                 shp_path: ./data/landmask/              
                single_cls: False                         
                    subset:                               
                    suffix:                               

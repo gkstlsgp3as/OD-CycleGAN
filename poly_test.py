@@ -88,7 +88,8 @@ def test(data,
          half_precision=True,
          trace=False,
          is_coco=False,
-         polygon=False):
+         polygon=False,
+         fusion='early'):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -152,6 +153,10 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+        if fusion == 'early':
+            org_img = img[:, :3, :, :]
+            gan = img[:, 3:, :, :]
+            img = org_img + gan*0.2; img = (img - img.min()) / (img.max() - img.min())
         img = img.to(device, non_blocking=True) # [batch, channel, img_shape] e.g. [32, 3, 576, 1056]
         img = img.half() if half else img.float()  # uint8 to fp16/32
         #img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -263,7 +268,7 @@ def test(data,
     
                             # Append detections
                             detected_set = set()
-                            ious = ious.cuda(); i = i.cuda()
+                            ious = ious.to(device); i = i.to(device)
                             
                             for j in (ious > iouv[index_ap50]).nonzero(as_tuple=False):
                                 d = ti[i[j]]  # detected target

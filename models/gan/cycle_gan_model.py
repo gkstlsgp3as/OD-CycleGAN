@@ -130,7 +130,7 @@ class CycleGANModel(BaseModel):
         self.real_B = input_B.to(self.device)
         self.fake_A = self.netG_B(self.real_B)
 
-    def to_image(self, input_image, imtype=np.float32):
+    def to_image(self, input_image, imtype=np.float16):
         
         if is_tensor(input_image):
             image_tensor = input_image

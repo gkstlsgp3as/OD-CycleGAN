@@ -45,7 +45,7 @@ from data.gan_data import create_dataset
 from models.gan import create_model
 #from utils.gan_utils.visualizer import Visualizer
 
-from utils.gan_utils import util
+
 
 logger = logging.getLogger(__name__) # generate logger 
 print (os.path.dirname(__file__))
@@ -111,7 +111,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = model(opt.cfg or ckpt['model'].yaml, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
@@ -119,7 +119,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         
-        model = model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = model(opt.cfg, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # gwang add
     with torch_distributed_zero_first(rank):
@@ -264,7 +264,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
-
+    
     # SyncBatchNorm
     if opt.sync_bn and cuda and rank != -1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
@@ -275,8 +275,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '), 
-                                            polygon=polygon)
-    breakpoint()
+                                            polygon=polygon, gan_model=gan_model)
+    
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data_file, nc - 1)
@@ -286,7 +286,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
-                                       pad=0.5, prefix=colorstr('valid: '), polygon=polygon)[0]
+                                       pad=0.5, prefix=colorstr('valid: '), polygon=polygon, gan_model=gan_model)[0]
         
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -311,7 +311,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
                     # nn.MultiheadAttention incompatibility with DDP https://github.com/pytorch/pytorch/issues/26698
                     find_unused_parameters=any(isinstance(layer, nn.MultiheadAttention) for layer in model.modules()))
-
+        
     # # gwang add
     # if cuda and rank != -1:
     #     model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
@@ -348,8 +348,6 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
 
-    trans = util.getTransforms()
-
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -380,12 +378,16 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         
-        for i, (imgs, targets, edges, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             #imgs, targets, paths, _ = next(iter(dataloader))
             #i, (imgs, targets, paths, _) = next(iter(pbar))
             ni = i + nb * epoch  # number integrated batches (since train start)
             #imgs = edges ## please notice this 
-            breakpoint()
+            
+            if opt.fusion == 'early':
+                img = imgs[:, :3, :, :]
+                gan = imgs[:, 3:, :, :]
+                imgs = img + gan*0.2; imgs = (imgs - imgs.min()) / (imgs.max() - imgs.min())
             imgs = imgs.to(device, non_blocking=True).float()# / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
             
             #gan_imgs = np.dstack(trans(imgs)); gan_imgs = 
@@ -412,6 +414,9 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             # Forward
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
+                nan_check = np.array([int(np.isnan(p.detach().cpu()).all()) for p in pred])
+                if len(nan_check[nan_check > 0]):
+                    breakpoint()
                 if hyp['loss_ota'] == 1 and not polygon:
                     
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
@@ -484,7 +489,9 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                                                 wandb_logger=wandb_logger,
                                                 compute_loss=compute_loss,
                                                 is_coco=is_coco,
-                                                polygon=polygon)
+                                                polygon=polygon,
+                                                fusion=opt.fusion
+                                                )
 
             # Write
             with open(results_file, 'a') as f:
@@ -525,7 +532,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 if best_fitness == fi:
                     torch.save(ckpt, best)
                     prev_bests = os.listdir(wdir); prev_bests = [b for b in prev_bests if b.startswith('best_')];
-                    os.remove(os.path.join(wdir, prev_bests[0]))
+                    if len(prev_bests):
+                        os.remove(os.path.join(wdir, prev_bests[0]))
                     pt_name = Cfg.Satellite + '_epoch' + str(epoch) + '_div' + str(Cfg.division) +\
                         '_pre' + str(round(results[0], 3)) + '_rec' + str(round(results[1], 3)) +\
                             '_map' + str(round(results[2], 3)) + '_map95' + str(round(results[3], 3))
@@ -571,7 +579,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                                           save_json=True,
                                           plots=False,
                                           is_coco=is_coco,
-                                          polygon=polygon)
+                                          polygon=polygon,
+                                          fusion=opt.fusion)
 
         # Strip optimizers
         final = best if best.exists() else last  # final model
@@ -599,7 +608,7 @@ if __name__ == '__main__':
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1 # total number of gpus
     opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1 # gpu number 
     set_logging(opt.global_rank)
-    
+    #torch.multiprocessing.set_start_method('spawn')
     #if opt.global_rank in [-1, 0]:
     #    check_git_status()
     #    check_requirements()
@@ -643,7 +652,7 @@ if __name__ == '__main__':
         lr0 = hyp['lr0']; lrf = hyp['lrf']; img_size = opt.img_size[0]
     # DDP mode
     opt.total_batch_size = opt.batch_size
-    
+    wandb_run = check_wandb_resume(opt)
     opt.device = select_device(opt.gpu_ids, batch_size=opt.batch_size)
     if opt.local_rank != -1:
         assert torch.cuda.device_count() > opt.local_rank # cpu number 
@@ -653,7 +662,7 @@ if __name__ == '__main__':
         # for 
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
-
+    
     # Train
     logger.info(opt)
     if not opt.evolve:

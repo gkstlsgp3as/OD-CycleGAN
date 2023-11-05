@@ -44,7 +44,7 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
         parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
         parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
-        parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
+        parser.add_argument('--local-rank', type=int, default=-1, help='DDP parameter, do not modify')
         parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
         parser.add_argument('--project', default='runs/train', help='save to project/name')
         parser.add_argument('--entity', default=None, help='W&B entity')
@@ -63,9 +63,10 @@ class TrainOptions(BaseOptions):
         #parser.add_argument('--mode', type=str, help='dst source of tif files')
         parser.add_argument('--target', default='BRIDG', help='define the target objects')
         parser.add_argument('--warmup', default=100, help='how many epochs being trained only for object detection')
-        parser.add_argument('--shp_path', default='/data/BRIDGE/cycleGAN/data/landmask/landline_mid/', help='shpfile for masking')
+        parser.add_argument('--shp_path', default='./data/landmask/', help='shpfile for masking')
         parser.add_argument('--gan', default=False, action='store_true', help='include gan model')
         parser.add_argument('--subset', default='', help='data subset to train detector; None, A, or B')
+        parser.add_argument('--fusion', default='early', help='enable data fusion i.e. early, mid, late')
 
         self.isTrain = False
         return parser

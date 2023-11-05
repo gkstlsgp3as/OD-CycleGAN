@@ -54,7 +54,7 @@ def check_wandb_resume(opt):
 
 
 def process_wandb_config_ddp_mode(opt):
-    with open(opt.data) as f:
+    with open(opt.data_file) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
     train_dir, val_dir = None, None
     if isinstance(data_dict['train'], str) and data_dict['train'].startswith(WANDB_ARTIFACT_PREFIX):
@@ -64,17 +64,17 @@ def process_wandb_config_ddp_mode(opt):
         train_path = Path(train_dir) / 'data/images/'
         data_dict['train'] = str(train_path)
 
-    if isinstance(data_dict['val'], str) and data_dict['val'].startswith(WANDB_ARTIFACT_PREFIX):
+    if isinstance(data_dict['valid'], str) and data_dict['valid'].startswith(WANDB_ARTIFACT_PREFIX):
         api = wandb.Api()
-        val_artifact = api.artifact(remove_prefix(data_dict['val']) + ':' + opt.artifact_alias)
+        val_artifact = api.artifact(remove_prefix(data_dict['valid']) + ':' + opt.artifact_alias)
         val_dir = val_artifact.download()
         val_path = Path(val_dir) / 'data/images/'
-        data_dict['val'] = str(val_path)
+        data_dict['valid'] = str(val_path)
     if train_dir or val_dir:
         ddp_data_path = str(Path(val_dir) / 'wandb_local_data.yaml')
         with open(ddp_data_path, 'w') as f:
             yaml.dump(data_dict, f)
-        opt.data = ddp_data_path
+        opt.data_file = ddp_data_path
 
 
 class WandbLogger():
@@ -115,7 +115,7 @@ class WandbLogger():
     def check_and_upload_dataset(self, opt):
         assert wandb, 'Install wandb to upload dataset'
         check_dataset(self.data_dict)
-        config_path = self.log_dataset_artifact(opt.data,
+        config_path = self.log_dataset_artifact(opt.data_file,
                                                 opt.single_cls,
                                                 'YOLOR' if opt.project == 'runs/train' else Path(opt.project).stem)
         print("Created dataset config file ", config_path)
@@ -138,7 +138,7 @@ class WandbLogger():
         if 'val_artifact' not in self.__dict__:  # If --upload_dataset is set, use the existing artifact, don't download
             self.train_artifact_path, self.train_artifact = self.download_dataset_artifact(data_dict.get('train'),
                                                                                            opt.artifact_alias)
-            self.val_artifact_path, self.val_artifact = self.download_dataset_artifact(data_dict.get('val'),
+            self.val_artifact_path, self.val_artifact = self.download_dataset_artifact(data_dict.get('valid'),
                                                                                        opt.artifact_alias)
             self.result_artifact, self.result_table, self.val_table, self.weights = None, None, None, None
             if self.train_artifact_path is not None:
@@ -146,8 +146,8 @@ class WandbLogger():
                 data_dict['train'] = str(train_path)
             if self.val_artifact_path is not None:
                 val_path = Path(self.val_artifact_path) / 'data/images/'
-                data_dict['val'] = str(val_path)
-                self.val_table = self.val_artifact.get("val")
+                data_dict['valid'] = str(val_path)
+                self.val_table = self.val_artifact.get("valid")
                 self.map_val_table_path()
         if self.val_artifact is not None:
             self.result_artifact = wandb.Artifact("run_" + wandb.run.id + "_progress", "evaluation")
@@ -198,11 +198,11 @@ class WandbLogger():
         self.train_artifact = self.create_dataset_table(LoadImagesAndLabels(
             data['train']), names, name='train') if data.get('train') else None
         self.val_artifact = self.create_dataset_table(LoadImagesAndLabels(
-            data['val']), names, name='val') if data.get('val') else None
+            data['valid']), names, name='valid') if data.get('valid') else None
         if data.get('train'):
             data['train'] = WANDB_ARTIFACT_PREFIX + str(Path(project) / 'train')
-        if data.get('val'):
-            data['val'] = WANDB_ARTIFACT_PREFIX + str(Path(project) / 'val')
+        if data.get('valid'):
+            data['valid'] = WANDB_ARTIFACT_PREFIX + str(Path(project) / 'valid')
         path = data_file if overwrite_config else '_wandb.'.join(data_file.rsplit('.', 1))  # updated data.yaml path
         data.pop('download', None)
         with open(path, 'w') as f:
@@ -212,7 +212,7 @@ class WandbLogger():
             self.wandb_run.use_artifact(self.val_artifact)
             self.wandb_run.use_artifact(self.train_artifact)
             self.val_artifact.wait()
-            self.val_table = self.val_artifact.get('val')
+            self.val_table = self.val_artifact.get('valid')
             self.map_val_table_path()
         else:
             self.wandb_run.log_artifact(self.train_artifact)
