@@ -32,7 +32,7 @@ from utils.general import labels_to_class_weights, labels_to_image_weights, init
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
-from utils.loss import ComputeLoss, ComputeLossOTA, Polygon_ComputeLoss, Polygon_ComputeLoss_Cross
+from utils.loss import ComputeLoss, ComputeLossOTA, Polygon_ComputeLoss, Polygon_ComputeLoss_Cross, Polygon_ComputeLoss_Entropy
 from utils.plots import plot_images, plot_labels, polygon_plot_labels, plot_results, plot_evolution, polygon_plot_images, set_colors
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
@@ -241,25 +241,30 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     start_epoch, best_fitness = 0, 0.0
     if pretrained:
         # Optimizer
-        if ckpt['optimizer'] is not None:
-            if ('transformer' in opt.cfg.split('/')[-1]) and (opt.weight!=''):
-                set_opt = optimizer.state_dict()['param_groups'][0].keys()
-                set_ckpt = ckpt['optimizer']['param_groups'][0].keys()
-                key_lists = list(set(set_ckpt) - set(set_opt))
-                [[el.pop(key, None) for key in key_lists] for el in ckpt['optimizer']['param_groups']]
+        
+        if (ckpt['optimizer'] is not None) and opt.resume:
+            if ('transformer' in opt.cfg.split('/')[-1]) and (opt.weights!=''):
+                #set_opt = optimizer.state_dict()['param_groups'][0].keys()
+                #set_ckpt = ckpt['optimizer']['param_groups'][0].keys()
+                #key_lists = list(set(set_ckpt) - set(set_opt))
+                #[[el.pop(key, None) for key in key_lists] for el in ckpt['optimizer']['param_groups']]
                 modify_optimizer_state_dict(ckpt['optimizer']['param_groups'], optimizer.state_dict()['param_groups'])
             optimizer.load_state_dict(ckpt['optimizer'])
-            
-            best_fitness = ckpt['best_fitness']
+        
+        best_fitness = ckpt['best_fitness']
+        print("lr: ", optimizer.state_dict()['param_groups'][0]['lr'])
 
         # EMA
         if ema and ckpt.get('ema'):
             ema_state_dict = ckpt['ema'].float().state_dict()
-            if ('transformer' in opt.cfg.split('/')[-1]) and (opt.weight!=''):
+            if ('transformer' in opt.cfg.split('/')[-1]) and (opt.weights!=''):
                 ema_state_dict = adjust_state_dict(ema_state_dict, ema.ema)
-                [ema_state_dict.pop(key, None) for key in ema_state_dict.keys() if '83' in key]
+                exclude = ['model.83.conv.weight', 'model.83.bn.weight', 'model.83.bn.bias', 'model.83.bn.running_mean', 'model.83.bn.running_var', 'model.83.bn.num_batches_tracked']
+                ema_state_dict = intersect_dicts(ema_state_dict, ema.ema.state_dict(), exclude=exclude)  # intersect
+                #[ema_state_dict.pop(key, None) for key in ema_state_dict.keys() if '83' in key]
             ema.ema.load_state_dict(ema_state_dict)
             ema.updates = ckpt['updates']
+
         # EMA2
         if opt.fusion == 'late':
             ema_key = 'ema'
@@ -271,7 +276,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             results_file.write_text(ckpt['training_results'])  # write results.txt
 
         # Epochs
-        start_epoch = 0#ckpt['epoch'] + 1
+        start_epoch = ckpt['epoch'] + 1
         if opt.resume:
             assert start_epoch > 0, '%s training to %g epochs is finished, nothing to resume.' % (weights, epochs)
         if epochs < start_epoch:
@@ -365,6 +370,8 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     if opt.fusion == 'late':
         compute_loss_cross = Polygon_ComputeLoss_Cross(model)
         compute_loss_org = ComputeLoss(model) if not polygon else Polygon_ComputeLoss(model)  # init loss class
+    #elif opt.fusion == 'mid':
+    #    compute_loss = Polygon_ComputeLoss_Entropy(model)
     else:
         compute_loss = ComputeLoss(model) if not polygon else Polygon_ComputeLoss(model)  # init loss class
 
@@ -455,7 +462,6 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 if hyp['loss_ota'] == 1 and not polygon:
                     
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
-
                 else:
                     loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if rank != -1:

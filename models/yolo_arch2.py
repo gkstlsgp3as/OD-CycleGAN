@@ -542,7 +542,7 @@ class Model(nn.Module):
         m = self.model[-1]  # Detect() or Polygon_Detect()
         if isinstance(m, Detect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(2, ch, s, s))['pred']])  # forward
+            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(2, ch, s, s))])  # forward
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
@@ -558,7 +558,7 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IAuxDetect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]][0])  # forward
+            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
             #print(m.stride)
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
@@ -593,13 +593,9 @@ class Model(nn.Module):
             s = [1, 0.83, 0.67]  # scales
             f = [None, 3, None]  # flips (2-ud, 3-lr)
             y = []  # outputs
-            out = {'pred': [], 'fusion': []}#
-            fusion = []
             for si, fi in zip(s, f):
                 xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
-                yi = self.forward_once(xi)['pred'][0:2]  # forward
-                breakpoint()
-                fusi = self.forward_once(xi)['fusion']
+                yi = self.forward_once(xi)[0:2]  # forward
                 # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
                 yi[..., :4] /= si  # de-scale
                 if fi == 2:
@@ -607,17 +603,12 @@ class Model(nn.Module):
                 elif fi == 3:
                     yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
                 y.append(yi)
-                fusion.append(fusi)
-            out['pred'] = y; out['fusion'] = fusion
-            return torch.cat(out, 1), None  # augmented inference, train
+            return torch.cat(y, 1), None  # augmented inference, train
         else:
             return self.forward_once(x, profile)  # single-scale inference, train
 
     def forward_once(self, x, profile=False):
         y, dt = [], []  # outputs
-        fusion = []
-        out = {'pred': [], 'fusion': []}
-        flag_sam = False
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -640,21 +631,13 @@ class Model(nn.Module):
                 dt.append((time_synchronized() - t) * 100)
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
 
-            if isinstance(m, SAM):
-                fusion.append(m(x))
-                flag_sam = True
-
             x = m(x)  # run
             
             y.append(x if m.i in self.save else None)  # save output
 
         if profile:
             print('%.1fms total' % sum(dt))
-        if flag_sam:
-            out['pred'] = x; out['fusion'] = fusion
-            return out
-        else: 
-            return x
+        return x
 
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
         # https://arxiv.org/abs/1708.02002 section 3.3

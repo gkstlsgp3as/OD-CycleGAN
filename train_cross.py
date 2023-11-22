@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import poly_test  # import test.py to get mAP after each epoch
+import poly_test_cross  # import test.py to get mAP after each epoch
 import test
 from models.experimental import attempt_load
 from models.yolo import Model, Polygon_Model
@@ -109,12 +109,17 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     # Model
     #pretrained = False
     model = Model if not polygon else Polygon_Model
+    model2 = Model if not polygon else Polygon_Model
     pretrained = weights.endswith('.pt')
     if pretrained:
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
         model = model(opt.cfg or ckpt['model'].yaml, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        if opt.fusion == 'late':
+            model2 = model2(opt.cfg or ckpt['model'].yaml, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        else:
+            model2 = model2(opt.cfg or ckpt['model2'].yaml, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
@@ -123,9 +128,11 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             state_dict = adjust_state_dict(state_dict, model)
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
+        model2.load_state_dict(state_dict, strict=False) 
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         model = model(opt.cfg, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model2 = model2(opt.cfg, ch=Cfg.input_ch, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # gwang add
     with torch_distributed_zero_first(rank):
@@ -136,6 +143,11 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # parameter names to freeze (full or partial)
     for k, v in model.named_parameters():
+        v.requires_grad = True  # train all layers
+        if any(x in k for x in freeze):
+            print('freezing %s' % k)
+            v.requires_grad = False
+    for k, v in model2.named_parameters():
         v.requires_grad = True  # train all layers
         if any(x in k for x in freeze):
             print('freezing %s' % k)
@@ -214,11 +226,15 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
 
     if opt.adam:
         optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
+        optimizer2 = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        optimizer2 = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+    optimizer2.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
+    optimizer2.add_param_group({'params': pg2})  # add pg2 (biases)
     
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
     
@@ -231,11 +247,13 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     else:
         lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
+    scheduler2 = lr_scheduler.LambdaLR(optimizer2, lr_lambda=lf)
     
     # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # EMA
     ema = ModelEMA(model) if rank in [-1, 0] else None
+    ema2 = ModelEMA(model2) if rank in [-1, 0] else None
 
     # Resume
     start_epoch, best_fitness = 0, 0.0
@@ -249,6 +267,10 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 [[el.pop(key, None) for key in key_lists] for el in ckpt['optimizer']['param_groups']]
                 modify_optimizer_state_dict(ckpt['optimizer']['param_groups'], optimizer.state_dict()['param_groups'])
             optimizer.load_state_dict(ckpt['optimizer'])
+            if opt.fusion == 'late':
+                optimizer2.load_state_dict(ckpt['optimizer'])
+            else:
+                optimizer2.load_state_dict(ckpt['optimizer2'])
             
             best_fitness = ckpt['best_fitness']
 
@@ -265,6 +287,14 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             ema_key = 'ema'
         else:
             ema_key = 'ema2'
+
+        if ema2 and ckpt.get(ema_key):
+            ema_state_dict2 = ckpt[ema_key].float().state_dict()
+            if ('transformer' in opt.cfg.split('/')[-1]) and (opt.weight!=''):
+                ema_state_dict2 = adjust_state_dict(ema_state_dict, ema2.ema)
+                [ema_state_dict2.pop(key, None) for key in ema_state_dict.keys() if '83' in key]
+            ema2.ema.load_state_dict(ema_state_dict)
+            ema2.updates = ckpt['updates']
 
         # Results
         if ckpt.get('training_results') is not None:
@@ -289,10 +319,12 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
+        model2 = torch.nn.DataParallel(model2)
     
     # SyncBatchNorm
     if opt.sync_bn and cuda and rank != -1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
+        model2 = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model2).to(device)
         logger.info('Using SyncBatchNorm()')
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
@@ -329,12 +361,17 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                 print("check_anchors")
                 check_anchors_model(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
+            model2.half().float()  # pre-reduce anchor precision
 
     # DDP mode
     if cuda and rank != -1:
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
                     # nn.MultiheadAttention incompatibility with DDP https://github.com/pytorch/pytorch/issues/26698
                     find_unused_parameters=any(isinstance(layer, nn.MultiheadAttention) for layer in model.modules()))
+        model2 = DDP(model2, device_ids=[opt.local_rank], output_device=opt.local_rank,
+                    # nn.MultiheadAttention incompatibility with DDP https://github.com/pytorch/pytorch/issues/26698
+                    find_unused_parameters=any(isinstance(layer, nn.MultiheadAttention) for layer in model2.modules()))
+        
     # # gwang add
     # if cuda and rank != -1:
     #     model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
@@ -346,11 +383,11 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers
     hyp['obj'] *= (imgsz / 640) ** 2 * 3. / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
-    model.nc = nc;  # attach number of classes to model
-    model.hyp = hyp  # attach hyperparameters to model
-    model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
-    model.names = names
+    model.nc = model2.nc = nc;  # attach number of classes to model
+    model.hyp = model2.hyp = hyp  # attach hyperparameters to model
+    model.gr = model2.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
+    model.class_weights = model2.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
+    model.names = model2.names = names
 
     # Start training
     t0 = time.time()
@@ -360,6 +397,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
+    scaler2 = amp.GradScaler(enabled=cuda)
     if not polygon:
         compute_loss_ota = ComputeLossOTA(model)  # init loss class
     if opt.fusion == 'late':
@@ -379,6 +417,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
     #    model2 = copy.deepcopy(model)
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        model2.train()
 
         # Update image weights (optional)
         if opt.image_weights:
@@ -398,14 +437,15 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(4, device=device)  # mean losses
+        mloss = torch.zeros(7, device=device)  # mean losses
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
-        logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls','total', 'labels', 'img_size'))
+        logger.info(('\n' + '%10s' * 11) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'box_cross', 'obj_cross', 'cls_cross','total', 'labels', 'img_size'))
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        optimizer2.zero_grad()
         
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             #imgs, targets, paths, _ = next(iter(dataloader))
@@ -436,6 +476,11 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                     x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
                     if 'momentum' in x:
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
+                for j, x in enumerate(optimizer2.param_groups):
+                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                    x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
+                    if 'momentum' in x:
+                        x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
             # Multi-scale
             if opt.multi_scale:
@@ -449,13 +494,16 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             # Forward
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
+                predv2 = model2(gans)
                 nan_check = np.array([int(np.isnan(p.detach().cpu()).all()) for p in pred])
                 if len(nan_check[nan_check > 0]):
                     breakpoint()
                 if hyp['loss_ota'] == 1 and not polygon:
                     
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
-
+                elif opt.fusion == 'late':
+                    loss, loss_items = compute_loss_cross(pred, predv2, targets.to(device))
+                    loss_gan, loss_items_gan = compute_loss_cross(predv2, pred, targets.to(device))
                 else:
                     loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if rank != -1:
@@ -465,29 +513,37 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
 
             # Backward
             scaler.scale(loss).backward(retain_graph=True)
+            scaler2.scale(loss_gan).backward()
 
             # Optimize
             if ni % accumulate == 0:
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
+                scaler2.step(optimizer2)  # optimizer.step
+                scaler2.update()
                 optimizer.zero_grad()
+                optimizer2.zero_grad() #https://discuss.pytorch.org/t/call-backward-twice/48852/14
                 if ema:
                     ema.update(model)
+                if ema2:
+                    ema2.update(model2)
 
             # Print
             if rank in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
-                s = ('%10s' * 2 + '%10.4g' * 6) % (
+                s = ('%10s' * 2 + '%10.4g' * 9) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
                 pbar.set_description(s)
 
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
+                    f2 = save_dir / f'train_gan_batch{ni}.jpg'  # filename
                     
                     plot_model = polygon_plot_images if polygon else plot_images
                     plot_model(imgs, targets, colors, paths, f)
+                    plot_model(gans, targets, colors, paths, f2)
                     #Thread(target=plot_model, args=(imgs, targets, colors, paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
@@ -501,15 +557,18 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
+        lr_cross = [x['lr'] for x in optimizer2.param_groups]  # for tensorboard
         scheduler.step()
+        scheduler2.step()
         if (epoch+1) % 1 != 0:
             continue
         
-        Test = poly_test if polygon else test
+        Test = poly_test_cross if polygon else test
         # DDP process 0 or single-GPU
         if rank in [-1, 0]:
             # mAP
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
+            ema2.update_attr(model2, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
@@ -517,13 +576,14 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                                                 batch_size=batch_size * 2,
                                                 imgsz=imgsz_test,
                                                 model=ema.ema,
+                                                model2=ema2.ema,
                                                 single_cls=opt.single_cls,
                                                 dataloader=testloader,
                                                 save_dir=save_dir,
                                                 verbose=nc < 50 and final_epoch,
                                                 plots=plots and final_epoch,
                                                 wandb_logger=wandb_logger,
-                                                compute_loss=compute_loss,
+                                                compute_loss=compute_loss_org,
                                                 is_coco=is_coco,
                                                 polygon=polygon,
                                                 fusion=opt.fusion
@@ -561,9 +621,12 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
                         'best_fitness': best_fitness,
                         'training_results': results_file.read_text(),
                         'model': deepcopy(model.module if is_parallel(model) else model).half(),
+                        'model2': deepcopy(model2.module if is_parallel(model2) else model2).half(),
                         'ema': deepcopy(ema.ema).half(),
+                        'ema2': deepcopy(ema2.ema).half(),
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
+                        'optimizer2': optimizer2.state_dict(),
                         'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
 
                 # Save last, best and delete
@@ -606,7 +669,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         logger.info('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
         if is_coco:  # if COCO
             for m in (last, best) if best.exists() else (last):  # speed, mAP tests
-                results, _, _ = poly_test.test(opt.data_file,
+                results, results2, _, _ = poly_test_cross.test(opt.data_file,
                                           batch_size=batch_size * 2,
                                           imgsz=imgsz_test,
                                           conf_thres=0.001,

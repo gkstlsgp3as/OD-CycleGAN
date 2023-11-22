@@ -6,7 +6,7 @@
             bbox_interval: -1                            
                    bucket:                               
              cache_images: True                          	[default: False]
-                      cfg: poly_yolov7_transformer.yaml  	[default: yolov7.yaml]
+                      cfg: poly_yolov8_attn_sam.yaml     	[default: yolov7.yaml]
           checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan/	[default: ./checkpoints]
                 crop_size: 640                           
                 data_file: sentinel.yaml                 	[default: data/sentinel.yaml]
@@ -26,7 +26,7 @@
                    fusion: mid                           	[default: early]
                       gan: False                         
                   gpu_ids: 0,1,2,3                       	[default: 0]
-                      hyp: hyp.scratch.transform.yaml    	[default: data/hyp.scratch.p5.yaml]
+                      hyp: hyp.scratch.custom.yaml       	[default: data/hyp.scratch.p5.yaml]
             image_weights: False                         
                  img_size: [640]                         	[default: 640]
                 init_gain: 0.02                          

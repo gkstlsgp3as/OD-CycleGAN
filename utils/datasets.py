@@ -355,7 +355,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             for x in self.labels:
                 x[:, 0] = 0
         
-        n = len(shapes)  # number of images
+        n = len(self.shapes)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(np.int64)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
@@ -1107,7 +1107,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
-            gan_img = self.gan_imgs[index] # self.gan_infer(img)#
+            gan_img = img#self.gan_imgs[index] # self.gan_infer(img)#
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
@@ -1140,17 +1140,17 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
             img = self.albumentations(img)
             gan_img = self.albumentations(gan_img)
             # flip up-down for all y
-            if random.random() < hyp['flipud']:
-                img = np.flipud(img)
-                gan_img = np.flipud(gan_img)
-                if nL:
-                    labels[:, 2::2] = 1 - labels[:, 2::2]
+            #if random.random() < hyp['flipud']:
+            #    img = np.flipud(img)
+            #    gan_img = np.flipud(gan_img)
+            #    if nL:
+            #        labels[:, 2::2] = 1 - labels[:, 2::2]
             # flip left-right for all x
-            if random.random() < hyp['fliplr']:
-                img = np.fliplr(img)
-                gan_img = np.flipud(gan_img)
-                if nL:
-                    labels[:, 1::2] = 1 - labels[:, 1::2]
+            #if random.random() < hyp['fliplr']:
+            #    img = np.fliplr(img)
+            #    gan_img = np.flipud(gan_img)
+            #    if nL:
+            #        labels[:, 1::2] = 1 - labels[:, 1::2]
         # original label shape is (nL, 9), add one column for target image index for build_targets()
         labels_out = torch.zeros((nL, 10))
         if nL:
@@ -1183,7 +1183,7 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
+        gan_img = img#self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img4
         if i == 0:  # top left
@@ -1221,7 +1221,6 @@ def polygon_load_mosaic(self, index):
     for x in (labels4[:, 1:], *segments4):
         np.clip(x, 0, 2 * s, out=x)  # inplace clip when using polygon_random_perspective()
     img4 = np.array(img4, np.float32); gan4 = np.array(gan4, np.float32)
-    # Augment
     img4, gan4, labels4 = polygon_random_perspective(img4, gan4, labels4, segments4,
                                                degrees=self.hyp['degrees'],
                                                translate=self.hyp['translate'],
@@ -1242,7 +1241,7 @@ def polygon_load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
+        gan_img = img#self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img9
         if i == 0:  # center
@@ -1429,7 +1428,7 @@ def letterbox(img, new_shape=(640, 640), color=(0.45, 0.45, 0.45), auto=True, sc
     # Resize and pad image while meeting stride-multiple constraints
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
+        new_shape = [new_shape, new_shape]
 
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
@@ -1625,16 +1624,16 @@ def polygon_random_perspective(img, gan_img, targets=(), segments=(), degrees=10
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     image_transformed = False
     # Transform label coordinates
-    n = len(targets)
-    if n:
+    nl = len(targets)
+    if nl:
         # if using segments: please use general.py::polygon_segment2box
         # segment is unnormalized np.array([[(x1, y1), (x2, y2), ...], ...])
         # targets is unnormalized np.array([[class id, x1, y1, x2, y2, ...], ...])
-        new = np.zeros((n, 8))
-        xy = np.ones((n * 4, 3))
-        xy[:, :2] = targets[:, 1:].reshape(n * 4, 2)
+        new = np.zeros((nl, 8))
+        xy = np.ones((nl * 4, 3))
+        xy[:, :2] = targets[:, 1:].reshape(nl * 4, 2)
         xy = xy @ M.T  # transform
-        new = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(n, 8)  # perspective rescale or affine
+        new = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(nl, 8)  # perspective rescale or affine
         
         if not mosaic:
             # Compute Top, Bottom, Left, Right Padding to Include Polygon Boxes inside Image

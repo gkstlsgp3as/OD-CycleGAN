@@ -994,7 +994,7 @@ def polygon_b_inter_union(boxes1, boxes2):
     n = boxes1.shape[0]
     inter = torch.zeros(n,)
     union = torch.zeros(n,)
-    boxes1 = boxes1.detach().cpu(); boxes2 = boxes2.cpu()
+    boxes1 = boxes1.detach().cpu(); boxes2 = boxes2.detach().cpu()
     
     for i in range(n):
         polygon1 = shapely.geometry.Polygon(np.array(boxes1[i, :].view(4,2))).convex_hull

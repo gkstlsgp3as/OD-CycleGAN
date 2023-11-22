@@ -2101,6 +2101,535 @@ class Polygon_ComputeLoss:
 
         return tcls, tbox, indices, anch
     
+class Polygon_ComputeLoss_Entropy:
+    # Compute losses for polygon anchors
+    
+    def __init__(self, model, autobalance=False):
+        super(Polygon_ComputeLoss, self).__init__()
+        device = next(model.parameters()).device  # get model device
+        h = model.hyp  # hyperparameters
+
+        # Define criteria
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+
+        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
+        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
+
+        # Focal loss
+        g = h['fl_gamma']  # focal loss gamma
+        if g > 0:
+            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+
+        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Polygon_Detect() module
+        self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
+        self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        for k in 'na', 'nc', 'nl', 'anchors':
+            setattr(self, k, getattr(det, k))
+
+            
+    def __call__(self, p, targets):  # predictions, targets, model
+        """"
+            targets: total anchors for this batch x 10
+            p: nl (number of anchor layers) x bs x na (number of anchors per layer) 
+              x ny (grid width) x nx (grid height) x no (89, number of outputs per anchor)
+            self.anchors: nl (number of prediction layers) x na (number of anchors per layer) x 2 (width and height)
+        """
+        from utils.cfg import Cfg
+        device = targets.device
+        lcls, lbox, lobj, lfus = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
+
+        tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets for computing loss
+        fusion = p['fusion']; p = p['pred'] # referred to Dual-YOLO
+        # Losses
+        for i, pi in enumerate(p):  # layer index, layer predictions
+            # pi: bs x na x ny x nx x no
+            b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+            tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj, shape is bs x na x ny x nx
+
+            n = b.shape[0]  # number of targets
+            if n:
+                ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
+
+                # Regression
+                pbox = ps[:, :8]  # predicted polygon box
+                
+                # tbox[i] is ordered, and pbox from model will learn the sequential order naturally: so specify ordered=True
+                iou = polygon_bbox_iou(pbox, tbox[i], iou_type=Cfg.iou_type, ordered=True, device=device)  # iou(prediction, target)
+                # lbox += (1.0 - iou).mean()  # iou loss
+                
+                zero = torch.tensor(0., device=device)
+                # Include the restrictions on predicting sequence: y3, y4 >= y1, y2; x1 <= x2; x4 <= x3
+                lbox += (torch.max(zero, ps[:, 1]-ps[:, 5])**2).mean()/6 + (torch.max(zero, ps[:, 3]-ps[:, 5])**2).mean()/6 + \
+                        (torch.max(zero, ps[:, 1]-ps[:, 7])**2).mean()/6 + (torch.max(zero, ps[:, 3]-ps[:, 7])**2).mean()/6 + \
+                        (torch.max(zero, ps[:, 0]-ps[:, 2])**2).mean()/6 + (torch.max(zero, ps[:, 6]-ps[:, 4])**2).mean()/6
+                # include the values of each vertice of poligon into loss function
+                lbox += nn.SmoothL1Loss(beta=0.11)(pbox, tbox[i])
+                
+                # Objectness
+                tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
+
+                # Classification
+                if self.nc > 1:  # cls loss (only if multiple classes)
+                    t = torch.full_like(ps[:, 9:], self.cn, device=device)  # targets
+                    t[range(n), tcls[i]] = self.cp
+                    lcls += self.BCEcls(ps[:, 9:], t)  # BCE
+                    # lcls += nn.CrossEntropyLoss()(ps[:, 9:], t.long().argmax(dim=1))    # softmax loss
+
+            obji = self.BCEobj(pi[..., 8], tobj)
+            lobj += obji * self.balance[i]  # obj loss
+            if self.autobalance:
+                self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
+
+        if self.autobalance:
+            self.balance = [x / self.balance[self.ssi] for x in self.balance]
+        lbox *= self.hyp['box']
+        lobj *= self.hyp['obj']
+        lcls *= self.hyp['cls']
+        bs = tobj.shape[0]  # batch size
+
+        loss = lbox + lobj + lcls
+        return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
+
+    
+    def build_targets(self, p, targets):
+        """
+            Build targets for Polygon_ComputeLoss
+            p: nl x bs x na x ny x nx x no
+            targets: image,class,x1,y1,x2,y2,x3,y3,x4,y4 (x1, y1...represent the relative positions)
+        """
+        
+        na, nt = self.na, targets.shape[0]  # number of anchors, targets; 3, 53
+        tcls, tbox, indices, anch = [], [], [], []
+        # gain has 11 elements: img id, class id, xyxyxyxy, anchor id
+        gain = torch.ones(11, device=targets.device).long()  # normalized to gridspace gain
+        ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
+        targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # append anchor indices
+        # targets.shape = (3, 53, 11) <= (3, 53, 10) cat (3, 53, 1)
+        g = 0.5  # bias
+        off = torch.tensor([[0, 0],
+                            [1, 0], [0, 1], [-1, 0], [0, -1],  # j,k,l,m
+                            # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
+                            ], device=targets.device).float() * g  # offsets
+
+        for i in range(self.nl): #3
+            # self.anchors have shape nl x na x 2
+            anchors = self.anchors[i]
+            gain[2:10] = torch.tensor(p[i].shape)[[3, 2, 3, 2, 3, 2, 3, 2]]  # xyxyxyxy gain
+            # p[0].shape = (16, 3, 64, 64, 10) => 64 for x and y 
+            # Match targets to anchors
+            t = targets * gain  # now t is unnormalized to pixel-level, with shape na x nt x 11
+            # t.shape = (3, 53, 11) <= (3, 53, 11) * (11)
+            if nt: 
+                # Utilize minimum bounding box to select boxes
+                t_width = (t[..., 2:10:2].max(dim=-1)[0]-t[..., 2:10:2].min(dim=-1)[0])[..., None] # x
+                t_height = (t[..., 3:10:2].max(dim=-1)[0]-t[..., 3:10:2].min(dim=-1)[0])[..., None] # y
+                # t_width.shape, t_height.shape = (3, 53, 1) <- (3, 53)
+                # None -> np.newaxis 
+                wh = torch.cat((t_width, t_height), dim=-1)
+                
+                # Using shape matches
+                # r = wh / anchors[:, None]  # wh ratio
+                # j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
+                
+                # Consider only best anchors
+                # max_ious, max_ious_idx = wh_iou(anchors, wh[0]).max(dim=0)
+                # mask = max_ious > self.hyp['iou_t']
+                # t = t[max_ious_idx[mask], mask]
+                
+                # Consider all anchors that exceed the iou threshold
+                j = wh_iou(anchors, wh[0]) > self.hyp['iou_t'] # iou criterion
+                t = t[j]  # filter
+                
+                
+                # now t has shape nt x 11
+                # Offsets
+                center_x = t[:, 2:10:2].mean(dim=-1)[:, None]
+                center_y = t[:, 3:10:2].mean(dim=-1)[:, None]
+                gxy = torch.cat((center_x, center_y), dim=-1)  # grid xy
+                
+                gxi = gain[[2, 3]] - gxy  # inverse
+                # gxy.shape, gxi.shape = (34, 2), (14, 2), (1, 2)
+                j, k = ((gxy % 1. < g) & (gxy > 1.)).T # True or False
+                l, m = ((gxi % 1. < g) & (gxi > 1.)).T
+                
+                j = torch.stack((torch.ones_like(j), j, k, l, m)) # True, j, k, l, m 
+                
+                #print(t.repeat((5,1,1)).shape) # (5, 1, 11)
+                t = t.repeat((5, 1, 1))[j]
+                
+                #print(t.shape) # (3, 11)
+                offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j]
+                
+            else:
+                t = targets[0]
+                offsets = 0
+
+            # Define
+            # Utilize polygon center to compute the grid indices gi, gj
+            b, c = t[:, :2].long().T  # image, class
+            center_x = t[:, 2:10:2].mean(dim=-1)[:, None]
+            center_y = t[:, 3:10:2].mean(dim=-1)[:, None]
+            gxy = torch.cat((center_x, center_y), dim=-1)  # grid xy
+            gij = (gxy - offsets).long()
+            gi, gj = gij.T  # grid xy indices
+
+            # Append
+            # tbox represents the relative positions from xyxyxyxy to center (in grid)
+            t[:, 2:10] = order_corners(t[:, 2:10])
+            a = t[:, 10].long()  # anchor indices
+            indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image, anchor, grid indices
+            
+            # same corners, different center points, different relative positions
+            tbox.append(t[:, 2:10]-gij.repeat(1, 4))  # polygon box
+            # different corners, different center points, same relative positions
+            # gij_origin = (gxy-0).long()
+            # tbox.append(t[:, 2:10]-gij_origin.repeat(1, 4))
+            
+            anch.append(anchors[a])  # anchors
+            tcls.append(c)  # class
+
+        return tcls, tbox, indices, anch
+
+class Polygon_ComputeLoss_Cross:
+    # Compute losses for polygon anchors
+    
+    def __init__(self, model, autobalance=False):
+        super(Polygon_ComputeLoss_Cross, self).__init__()
+        device = next(model.parameters()).device  # get model device
+        h = model.hyp  # hyperparameters
+        
+        # Define criteria
+        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+
+        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
+        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
+
+        # Focal loss
+        g = h['fl_gamma']  # focal loss gamma
+        if g > 0:
+            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+
+        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Polygon_Detect() module
+        self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
+        self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        for k in 'na', 'nc', 'nl', 'anchors':
+            setattr(self, k, getattr(det, k))
+
+            
+    def __call__(self, p, p2, targets):  # predictions, predictions2, targets, model
+        """"
+            targets: total anchors for this batch x 10
+            p: nl (number of anchor layers) x bs x na (number of anchors per layer) 
+              x ny (grid width) x nx (grid height) x no (89, number of outputs per anchor)
+              e.g. (16, 3, 80, 80, 12)
+            self.anchors: nl (number of prediction layers) x na (number of anchors per layer) x 2 (width and height)
+        """
+        from utils.cfg import Cfg
+        device = targets.device
+        lcls, lbox, lobj, lbox_cross, lobj_cross, lcls_cross = torch.zeros(1, device=device), torch.zeros(1, device=device), \
+            torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
+                
+        tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets for computing loss
+        p2_cross = self.build_cross_targets(p, p2)
+        
+        # Losses
+        for i, pi in enumerate(p):  # layer index, layer predictions; (16, 3, 80, 80, 12)
+            # pi: bs x na x ny x nx x no
+            b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+            tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj, shape is bs x na x ny x nx
+            tobj_cross = torch.zeros_like(pi[..., 0], device=device)  # target obj, shape is bs x na x ny x nx
+            
+            n = b.shape[0]  # number of targets
+            if n:
+                ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets (36, 12) -> 36 is # of targets
+                ps_cross = p2_cross[i][b, a, gj, gi]
+                # Regression
+                pbox = ps[:, :8]  # predicted polygon box (36, 8)
+                pbox_cross = ps_cross[:, :8]
+                # tbox[i] is ordered, and pbox from model will learn the sequential order naturally: so specify ordered=True
+                
+                iou = polygon_bbox_iou(pbox, tbox[i], iou_type=Cfg.iou_type, ordered=True, device=device)  # iou(prediction, target)
+                iou_cross = polygon_bbox_iou(pbox, pbox_cross, iou_type=Cfg.iou_type, ordered=True, device=device)  # iou(prediction, target)
+
+                zero = torch.tensor(0., device=device)
+                # Include the restrictions on predicting sequence: y3, y4 >= y1, y2; x1 <= x2; x4 <= x3
+                lbox += (torch.max(zero, ps[:, 1]-ps[:, 5])**2).mean()/6 + (torch.max(zero, ps[:, 3]-ps[:, 5])**2).mean()/6 + \
+                        (torch.max(zero, ps[:, 1]-ps[:, 7])**2).mean()/6 + (torch.max(zero, ps[:, 3]-ps[:, 7])**2).mean()/6 + \
+                        (torch.max(zero, ps[:, 0]-ps[:, 2])**2).mean()/6 + (torch.max(zero, ps[:, 6]-ps[:, 4])**2).mean()/6
+                # include the values of each vertice of poligon into loss function
+                lbox += nn.SmoothL1Loss(beta=0.11)(pbox, tbox[i])
+                
+                #iou_cross = polygon_bbox_iou(pbox, pbox_cross, iou_type=Cfg.iou_type, ordered=True, device=device)  # iou(prediction, target)
+
+                # Include the restrictions on predicting sequence: y3, y4 >= y1, y2; x1 <= x2; x4 <= x3
+                lbox_cross += (torch.max(zero, ps_cross[:, 1]-ps_cross[:, 5])**2).mean()/6 + (torch.max(zero, ps_cross[:, 3]-ps_cross[:, 5])**2).mean()/6 + \
+                        (torch.max(zero, ps_cross[:, 1]-ps_cross[:, 7])**2).mean()/6 + (torch.max(zero, ps_cross[:, 3]-ps_cross[:, 7])**2).mean()/6 + \
+                        (torch.max(zero, ps_cross[:, 0]-ps_cross[:, 2])**2).mean()/6 + (torch.max(zero, ps_cross[:, 6]-ps_cross[:, 4])**2).mean()/6
+                # include the values of each vertice of poligon into loss function
+                lbox_cross += nn.SmoothL1Loss(beta=0.11)(pbox, pbox_cross)
+                
+                '''
+                if indices_cross[i]!=None: 
+                    ps_cross = pi[b2, a2, gj2, gi2]
+                    pbox_cross = ps_cross[:,:,8]
+                    iou_cross = polygon_bbox_iou(pbox, pbox_cross, iou_type=Cfg.iou_type, ordered=True, device=device)  # iou(prediction, target)
+
+                    # Include the restrictions on predicting sequence: y3, y4 >= y1, y2; x1 <= x2; x4 <= x3
+                    lbox_cross += (torch.max(zero, ps_cross[:, 1]-ps_cross[:, 5])**2).mean()/6 + (torch.max(zero, ps_cross[:, 3]-ps_cross[:, 5])**2).mean()/6 + \
+                        (torch.max(zero, ps_cross[:, 1]-ps_cross[:, 7])**2).mean()/6 + (torch.max(zero, ps_cross[:, 3]-ps_cross[:, 7])**2).mean()/6 + \
+                        (torch.max(zero, ps_cross[:, 0]-ps_cross[:, 2])**2).mean()/6 + (torch.max(zero, ps_cross[:, 6]-ps_cross[:, 4])**2).mean()/6
+                    # include the values of each vertice of poligon into loss function
+                    lbox_cross += nn.SmoothL1Loss(beta=0.11)(pbox, pbox_cross)
+
+                    if iou_cross!=0: tobj_cross[b2, a2, gj2, gi2] = (1.0 - self.gr) + self.gr * iou_cross.detach().clamp(0).type(tobj_cross.dtype)  # iou ratio
+                '''
+                # lbox += (1.0 - iou).mean()  # iou loss
+                # Objectness
+                tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
+                tobj_cross[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou_cross.detach().clamp(0).type(tobj_cross.dtype)  # iou ratio
+                # Classification
+                if self.nc > 1:  # cls loss (only if multiple classes)
+                    t = torch.full_like(ps[:, 9:], self.cn, device=device)  # targets
+                    t[range(n), tcls[i]] = self.cp
+                    lcls += self.BCEcls(ps[:, 9:], t)  # BCE
+                    lcls_cross += nn.SmoothL1Loss(beta=0.11)(ps[:, 9:], ps_cross[:, 9:])#self.BCEcls(ps[:, 9:], ps_cross[:, 9:])
+                    # lcls += nn.CrossEntropyLoss()(ps[:, 9:], t.long().argmax(dim=1))    # softmax loss
+            
+            obji = self.BCEobj(pi[..., 8], tobj)
+            lobj += obji * self.balance[i]  # obj loss
+            obji_cross = nn.SmoothL1Loss(beta=0.11)(pi[..., 8], p2_cross[i][...,8])#self.BCEobj(pi[..., 8], p2_cross[i][...,8])
+            lobj_cross += obji_cross * self.balance[i]  # obj loss
+            if self.autobalance:
+                self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
+
+        if self.autobalance:
+            self.balance = [x / self.balance[self.ssi] for x in self.balance]
+        lbox *= self.hyp['box']
+        lobj *= self.hyp['obj']
+        lcls *= self.hyp['cls']
+        lbox_cross *= self.hyp['box_cross']
+        lobj_cross *= self.hyp['obj_cross']
+        lcls_cross *= self.hyp['cls_cross']
+        bs = tobj.shape[0]  # batch size
+
+        loss = lbox + lobj + lcls + lbox_cross + lobj_cross + lcls_cross
+        return loss * bs, torch.cat((lbox, lobj, lcls, lbox_cross, lobj_cross, lcls_cross, loss)).detach()
+
+    
+    def build_targets(self, p, targets):
+        """
+            Build targets for Polygon_ComputeLoss
+            p: nl x bs x na x ny x nx x no
+            targets: image,class,x1,y1,x2,y2,x3,y3,x4,y4 (x1, y1...represent the relative positions)
+        """
+        
+        na, nt = self.na, targets.shape[0]  # number of anchors, targets; 3, 39
+        tcls, tbox, indices, anch = [], [], [], []
+        # gain has 11 elements: img id, class id, xyxyxyxy, anchor id
+        
+        gain = torch.ones(11, device=targets.device).long()  # normalized to gridspace gain
+        ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # (3, 39); same as .repeat_interleave(nt)
+        targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # (3, 39, 11); append anchor indices
+        # targets.shape = (3, 53, 11) <= (3, 53, 10) cat (3, 53, 1)
+        g = 0.5  # bias
+        off = torch.tensor([[0, 0],
+                            [1, 0], [0, 1], [-1, 0], [0, -1],  # j,k,l,m
+                            # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
+                            ], device=targets.device).float() * g  # offsets
+
+        for i in range(self.nl): #3
+            # self.anchors have shape nl x na x 2
+            anchors = self.anchors[i]
+            gain[2:10] = torch.tensor(p[i].shape)[[3, 2, 3, 2, 3, 2, 3, 2]]  # xyxyxyxy gain; (1,1,80,80,80,80,80,80,80,80,1)
+            # p[0].shape = (16, 3, 64, 64, 10) => 64 for x and y 
+            # Match targets to anchors
+            t = targets * gain  # now t is unnormalized to pixel-level, with shape na x nt x 11
+            # t.shape = (3, 53, 11) <= (3, 53, 11) * (11)
+            if nt: 
+                # Utilize minimum bounding box to select boxes
+                t_width = (t[..., 2:10:2].max(dim=-1)[0]-t[..., 2:10:2].min(dim=-1)[0])[..., None] # x
+                t_height = (t[..., 3:10:2].max(dim=-1)[0]-t[..., 3:10:2].min(dim=-1)[0])[..., None] # y
+                # t_width.shape, t_height.shape = (3, 53, 1) <- (3, 53)
+                # None -> np.newaxis 
+                wh = torch.cat((t_width, t_height), dim=-1) # (3, 39, 2)
+                
+                # Using shape matches
+                # r = wh / anchors[:, None]  # wh ratio
+                # j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
+                
+                # Consider only best anchors
+                # max_ious, max_ious_idx = wh_iou(anchors, wh[0]).max(dim=0)
+                # mask = max_ious > self.hyp['iou_t']
+                # t = t[max_ious_idx[mask], mask]
+                
+                # Consider all anchors that exceed the iou threshold
+                j = wh_iou(anchors, wh[0]) > self.hyp['iou_t'] # iou criterion (3, 39) => TF
+                t = t[j]  # filter (12, 11) -> filtered to 12
+                
+                
+                # now t has shape nt x 11
+                # Offsets
+                center_x = t[:, 2:10:2].mean(dim=-1)[:, None] # org coordinates
+                center_y = t[:, 3:10:2].mean(dim=-1)[:, None]
+                gxy = torch.cat((center_x, center_y), dim=-1)  # grid xy
+                
+                gxi = gain[[2, 3]] - gxy  # inverse 
+                # gxy.shape, gxi.shape = (12, 2), (12, 2)
+                j, k = ((gxy % 1. < g) & (gxy > 1.)).T # True or False => (12) each; x, y
+                l, m = ((gxi % 1. < g) & (gxi > 1.)).T 
+                
+                j = torch.stack((torch.ones_like(j), j, k, l, m)) # True, j, k, l, m => (5, 12)
+                
+                #print(t.repeat((5,1,1)).shape) # (5, 1, 11)
+                t = t.repeat((5, 1, 1))[j] # (5, 36, 11) -> (36, 11)
+                
+                #print(t.shape) # (3, 11)
+                offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j]
+                
+            else:
+                t = targets[0]
+                offsets = 0
+
+            # Define
+            # Utilize polygon center to compute the grid indices gi, gj
+            # p2 psuedo boxes 
+            #if (p2[i][...,8].min() > -0.5):
+            #    thres = 0.1
+            #else:
+            #    thres = 10
+
+            # t = (img_id, cls, coords(8), anc_id)
+            b, c = t[:, :2].long().T  # image, class
+            
+            center_x = t[:, 2:10:2].mean(dim=-1)[:, None]
+            center_y = t[:, 3:10:2].mean(dim=-1)[:, None]
+            gxy = torch.cat((center_x, center_y), dim=-1)  # grid xy
+            gij = (gxy - offsets).long()
+            gi, gj = gij.T  # grid xy indices
+            
+            # Append
+            # tbox represents the relative positions from xyxyxyxy to center (in grid)
+            t[:, 2:10] = order_corners(t[:, 2:10])
+            a = t[:, 10].long()  # anchor indices
+            indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image, anchor, grid indices
+            
+            # same corners, different center points, different relative positions
+            tbox.append(t[:, 2:10]-gij.repeat(1, 4))  # polygon box
+            # different corners, different center points, same relative positions
+            # gij_origin = (gxy-0).long()
+            # tbox.append(t[:, 2:10]-gij_origin.repeat(1, 4))
+            
+            anch.append(anchors[a])  # anchors
+            tcls.append(c)  # class
+        return tcls, tbox, indices, anch
+    
+    def build_cross_targets(self, p, p2):
+        """
+            Build targets for Polygon_ComputeLoss
+            p: nl x bs x na x ny x nx x no
+            targets: image,class,x1,y1,x2,y2,x3,y3,x4,y4 (x1, y1...represent the relative positions)
+        """
+        # gain has 11 elements: img id, class id, xyxyxyxy, anchor id
+        import copy
+        p2_cross = [pi.clone() for pi in p]
+        for i in range(self.nl): #3
+            # p2 psuedo boxes 
+            #if (p2[i][...,8].min() > -0.5):
+            #    thres = 0.1
+            #else:
+            #    thres = 10
+            gain = torch.ones(12, device=p2[0].device).long()  # normalized to gridspace gain
+            gain[:8] = torch.tensor(p2[i].shape)[[3, 2, 3, 2, 3, 2, 3, 2]]
+            t = p2[i] * gain
+            #anchors = self.anchors[i]
+            thres = 0.3
+            im_id, anc_id, x_id, y_id = (t[...,8] > thres).nonzero(as_tuple=True) #threshold with objectness score
+            
+            #boxes = t[t[...,8]>thres]; 
+            p2_cross[i][im_id, anc_id, x_id, y_id] = p2[i][im_id, anc_id, x_id, y_id]
+            # boxes = (anc, img, (coords, conf, cls))
+            '''
+            t_width = (boxes[..., 0:-1:2].max(dim=-1)[0]-boxes[..., 0:-1:2].min(dim=-1)[0])[..., None] # x
+            t_height = (boxes[..., 1:-1:2].max(dim=-1)[0]-boxes[..., 1:-1:2].min(dim=-1)[0])[..., None] # y
+            
+            wh = torch.cat((t_width, t_height), dim=-1) # (3, 39, 2)
+            
+            # Consider all anchors that exceed the iou threshold
+            idx = wh_iou(anchors, wh) > self.hyp['iou_t'] # iou criterion (3, 39) => TF
+            boxes = boxes[idx]  # filter (12, 11) -> filtered to 12
+            '''
+        return p2_cross
+
+    def build_cross_targets2(self, p, p2):
+        """
+            Build targets for Polygon_ComputeLoss
+            p: nl x bs x na x ny x nx x no
+            targets: image,class,x1,y1,x2,y2,x3,y3,x4,y4 (x1, y1...represent the relative positions)
+        """
+        na, nt = self.na, p2[0].shape[-1]  # number of anchors, targets; 3, 39
+        tcls, tbox, indices, anch = [], [], [], []
+
+        # gain has 11 elements: img id, class id, xyxyxyxy, anchor id
+        ai = torch.arange(na, device=p2[0].device).float().view(na, 1).repeat(1, nt)  # (3, 39); same as .repeat_interleave(nt)
+        # targets.shape = (3, 53, 11) <= (3, 53, 10) cat (3, 53, 1)
+        g = 0.5  # bias
+
+          # xyxyxyxy gain; (1,1,80,80,80,80,80,80,80,80,1)
+          # now t is unnormalized to pixel-level, with shape na x nt x 11    
+        
+        for i in range(self.nl): #3
+            # p2 psuedo boxes 
+            #if (p2[i][...,8].min() > -0.5):
+            #    thres = 0.1
+            #else:
+            #    thres = 10
+            gain = torch.ones(12, device=p2[0].device).long()  # normalized to gridspace gain
+            gain[:8] = torch.tensor(p2[i].shape)[[3, 2, 3, 2, 3, 2, 3, 2]]
+            t = p2[i] * gain
+            anchors = self.anchors[i]
+            thres = 0.3
+            im_id, anc_id, x_id, y_id = (t[...,8] > thres).nonzero(as_tuple=True) #threshold with objectness score
+            boxes = t[t[...,8]>thres]; 
+            # boxes = (anc, img, (coords, conf, cls))
+
+            b = im_id; c = boxes[:, 9:].argmax(dim=1)
+            t_width = (boxes[..., 0:-1:2].max(dim=-1)[0]-boxes[..., 0:-1:2].min(dim=-1)[0])[..., None] # x
+            t_height = (boxes[..., 1:-1:2].max(dim=-1)[0]-boxes[..., 1:-1:2].min(dim=-1)[0])[..., None] # y
+            
+            wh = torch.cat((t_width, t_height), dim=-1) # (3, 39, 2)
+            
+            # Consider all anchors that exceed the iou threshold
+            idx = wh_iou(anchors, wh) > self.hyp['iou_t'] # iou criterion (3, 39) => TF
+            boxes = boxes[idx]  # filter (12, 11) -> filtered to 12
+            if len(boxes)==0: 
+                indices.append(None)
+                tbox.append(None)
+                anch.append(None)
+                tcls.append(None)
+                continue
+            else:
+                breakpoint()
+            gi = x_id; gj = y_id
+
+            # Append
+            # tbox represents the relative positions from xyxyxyxy to center (in grid)
+            a = anc_id
+            indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image, anchor, grid indices
+            
+            # same corners, different center points, different relative positions
+            tbox.append(boxes[:, :8])  # polygon box
+            # different corners, different center points, same relative positions
+            # gij_origin = (gxy-0).long()
+            # tbox.append(t[:, 2:10]-gij_origin.repeat(1, 4))
+            
+            anch.append(anchors[a])  # anchors
+            tcls.append(c)  # class
+        return tcls, tbox, indices, anch
+    
 if __name__ == '__main__':
     import numpy as np 
     import argparse

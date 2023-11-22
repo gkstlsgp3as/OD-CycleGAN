@@ -77,6 +77,7 @@ def test(data,
          augment=False,
          verbose=False,
          model=None,
+         model2=None,
          dataloader=None,
          save_dir=Path(''),  # for saving images
          save_txt=False,  # for auto-labelling
@@ -106,16 +107,19 @@ def test(data,
 
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
+        model2 = attempt_load(weights, map_location=device)  # load FP32 model
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check img_size
         
         if trace:
             model = TracedModel(model, device, opt.img_size)
+            model2 = TracedModel(model2, device, opt.img_size)
 
     # Half
     half = device.type != 'cpu' and half_precision  # half precision only supported on CUDA
     if half:
         model.half()
+        model2.half()
 
     # Configure
     model.eval()
@@ -143,6 +147,7 @@ def test(data,
     seen = 0
     
     confusion_matrix = Polygon_ConfusionMatrix(nc=nc)
+    confusion_matrix2 = Polygon_ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     colors = set_colors(names, target=None)
     coco91class = coco80_to_coco91_class()
@@ -151,7 +156,8 @@ def test(data,
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
-    jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
+    loss2 = torch.zeros(3, device=device)
+    jdict, stats, stats2, ap, ap_class, wandb_images = [], [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         if fusion == 'early':
             #org_img = img[:, :3, :, :]
@@ -173,7 +179,7 @@ def test(data,
             # Run model
             t = time_synchronized()
             out, train_out = model(img, augment=augment)  # inference and training outputs
-            #out2, train_out2 = model2(gan, augment=augment)
+            out2, train_out2 = model2(gan, augment=augment)
 
             # out.shape = [32, 37422, 10]
             # train_out -> 3 layers => each layer: [32, 3, 72, 132, 5], [32, 3, 36, 66, 5], [32, 3, 18, 33, 5]
@@ -182,9 +188,9 @@ def test(data,
             # Compute loss
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
-            #if fusion == 'late':
-            #    loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
-            #    loss2 += compute_loss([x.float() for x in train_out2], targets)[1][:3]  # box, obj, cls
+            if fusion == 'late':
+                loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
+                loss2 += compute_loss([x.float() for x in train_out2], targets)[1][:3]  # box, obj, cls
 
  
             # Run NMS
@@ -192,6 +198,8 @@ def test(data,
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling 
             t = time_synchronized()
             out = polygon_non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+            out2 = polygon_non_max_suppression(out2, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+            
             # out =  non_max_suppression_obb(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
             t1 += time_synchronized() - t
 
@@ -200,7 +208,7 @@ def test(data,
             for si, pred in enumerate(out):
                 labels = targets[targets[:, 0] == si, 1:] # labels (tensor):(n_gt, [clsid, xyxyxyxy])
                 #labels = targets[targets[:, 0] == si, 1:7] # labels (tensor):(n_gt, [clsid cx cy l s theta]) θ[-pi/2, pi/2)
-    
+                pred2 = out2[si]
                 nl = len(labels)
                 tcls = labels[:, 0].tolist() if nl else []  # target class
                 # path = Path(paths[si])
@@ -209,13 +217,17 @@ def test(data,
                 if len(pred) == 0:
                     if nl:
                         stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                        stats2.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
                     continue
                 
                 # Predictions
                 if single_cls:
                     pred[:, 9] = 0
+                    pred2[:, 9] = 0
                 predn = pred.clone()
+                predn2 = pred2.clone()
                 polygon_scale_coords(img[si].shape[1:], predn[:, :8], shapes[si][0], shapes[si][1])  # native-space pred
+                polygon_scale_coords(gan[si].shape[1:], predn2[:, :8], shapes[si][0], shapes[si][1])  # native-space pred
     
                 # Append to text file
                 if save_txt:
@@ -234,11 +246,15 @@ def test(data,
                         if batch_i == 0:
                             if wandb_logger.current_epoch == wandb_logger.bbox_interval:
                                 f = save_dir / f'test_batch{batch_i}_labels.jpg'  # predictions
+                                f2 = save_dir / f'test_batch{batch_i}_gan_labels.jpg'  # predictions
                                 polygon_plot_images(img, targets, colors, paths, f, names)
+                                polygon_plot_images(gan, targets, colors, paths, f2, names)
                                 current_batches = [wandb_logger.wandb.Image(str(f), caption=f.name)]
                                 wandb_logger.log({f"Validation-targeted-labels": current_batches})
                             f = save_dir / f'test_batch{batch_i}_pred_epoch{wandb_logger.current_epoch}.jpg'  # predictions
+                            f2 = save_dir / f'test_batch{batch_i}_pred_gan_epoch{wandb_logger.current_epoch}.jpg'  # predictions
                             polygon_plot_images(img, polygon_output_to_target(out), colors, paths, f, names)
+                            polygon_plot_images(gan, polygon_output_to_target(out2), colors, paths, f2, names)
                             current_batches = [wandb_logger.wandb.Image(str(f), caption=f.name)]
                             wandb_logger.log({f"Validation-epoch{wandb_logger.current_epoch}": current_batches})
     
@@ -257,29 +273,35 @@ def test(data,
     
                 # Assign all predictions as incorrect
                 correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
+                correct2 = torch.zeros(pred2.shape[0], niou, dtype=torch.bool, device=device)
                 if nl:
-                    detected = []  # target indices
+                    detected = detected2 = []  # target indices
                     tcls_tensor = labels[:, 0]
     
                     # target boxes
                     tbox = labels[:, 1:9]
                     polygon_scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
+                    polygon_scale_coords(gan[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
                     if plots:
                         confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
+                        confusion_matrix2.process_batch(predn2, torch.cat((labels[:, 0:1], tbox), 1))
     
                     # Per target class
                     for cls in torch.unique(tcls_tensor):
                         ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # target indices
                         pi = (cls == pred[:, 9]).nonzero(as_tuple=False).view(-1)  # prediction indices
+                        pi2 = (cls == pred2[:, 9]).nonzero(as_tuple=False).view(-1)  # prediction indices
     
                         # Search for detections
                         if pi.shape[0]:
                             # Prediction to target ious
                             ious, i = polygon_box_iou(predn[pi, :8], tbox[ti]).max(1)  # best ious, indices
+                            ious2, i2 = polygon_box_iou(predn2[pi2, :8], tbox[ti]).max(1)  # best ious, indices
     
                             # Append detections
-                            detected_set = set()
+                            detected_set = detected_set2 = set()
                             ious = ious.to(device); i = i.to(device)
+                            ious2 = ious2.to(device); i2 = i2.to(device)
                             
                             for j in (ious > iouv[index_ap50]).nonzero(as_tuple=False):
                                 d = ti[i[j]]  # detected target
@@ -289,9 +311,18 @@ def test(data,
                                     correct[pi[j]] = ious[j] > iouv  # iou_thres is 1xn
                                     if len(detected) == nl:  # all targets already located in image
                                         break
+                            for j in (ious2 > iouv[index_ap50]).nonzero(as_tuple=False):
+                                d = ti[i[j]]  # detected target
+                                if d.item() not in detected_set:
+                                    detected_set2.add(d.item())
+                                    detected2.append(d)
+                                    correct2[pi2[j]] = ious2[j] > iouv  # iou_thres is 1xn
+                                    if len(detected2) == nl:  # all targets already located in image
+                                        break
     
                 # Append statistics (correct, conf, pcls, tcls)
                 stats.append((correct.cpu(), pred[:, 8].cpu(), pred[:, 9].cpu(), tcls))
+                stats2.append((correct2.cpu(), pred2[:, 8].cpu(), pred2[:, 9].cpu(), tcls))
     
             # Plot images
             if plots and batch_i < 3:
@@ -299,6 +330,10 @@ def test(data,
                 Thread(target=polygon_plot_images, args=(img, targets, colors, paths, f, names), daemon=True).start()
                 f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
                 Thread(target=polygon_plot_images, args=(img, polygon_output_to_target(out), colors, paths, f, names), daemon=True).start()     
+                f2 = save_dir / f'test_batch{batch_i}_gan_labels.jpg'  # labels
+                Thread(target=polygon_plot_images, args=(gan, targets, colors, paths, f2, names), daemon=True).start()
+                f2 = save_dir / f'test_batch{batch_i}_gan_pred.jpg'  # predictions
+                Thread(target=polygon_plot_images, args=(gan, polygon_output_to_target(out2), colors, paths, f2, names), daemon=True).start()     
             
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
@@ -310,14 +345,27 @@ def test(data,
     else:
         nt = torch.zeros(1)
 
+    stats2 = [np.concatenate(x, 0) for x in zip(*stats2)]  # to numpy
+    if len(stats2) and stats2[0].any():
+        p2, r2, ap2, f12, ap_class2 = ap_per_class(*stats2, plot=plots, save_dir=save_dir, names=names)
+        ap502, ap2 = ap2[:, 0], ap2.mean(1)  # AP@0.5, AP@0.5:0.95
+        mp2, mr2, map502, map2 = p2.mean(), r2.mean(), ap502.mean(), ap2.mean()
+        nt2 = np.bincount(stats2[3].astype(np.int64), minlength=nc)  # number of targets per class
+    else:
+        nt2 = torch.zeros(1)
+
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 4  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
+    print(pf % ('gan', seen, nt2.sum(), mp2, mr2, map502, map2))
 
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+    if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats2):
+        for i, c in enumerate(ap_class2):
+            print(pf % (names[c], seen, nt2[c], p2[i], r2[i], ap502[i], ap2[i]))
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (imgsz, imgsz, batch_size)  # tuple
@@ -327,6 +375,7 @@ def test(data,
     # Plots
     if plots:
         confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
+        confusion_matrix2.plot(save_dir=save_dir, names=list(names.values()))
         if wandb_logger and wandb_logger.wandb:
             val_batches = [wandb_logger.wandb.Image(str(f), caption=f.name) for f in sorted(save_dir.glob('test*.jpg'))]
             wandb_logger.log({"Validation": val_batches})
@@ -361,13 +410,15 @@ def test(data,
 
     # Return results
     model.float()  # for training
+    model2.float() 
     if not training:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         print(f"Results saved to {save_dir}{s}")
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()),\
+        (mp2, mr2, map502, map2, *(loss2.cpu() / len(dataloader)).tolist()), maps, t
 
 
 if __name__ == '__main__':

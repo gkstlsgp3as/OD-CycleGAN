@@ -227,3 +227,13 @@ class CycleGANModel(BaseModel):
         self.backward_D_A()      # calculate gradients for D_A
         self.backward_D_B()      # calculate graidents for D_B
         self.optimizer_D.step()  # update D_A and D_B's weights
+    
+    def gan_infer(self, img):
+        from utils.gan_utils import util
+        trans = util.getTransforms()
+
+        gan_img = trans(img); gan_img = torch.unsqueeze(gan_img, 0)
+        self.inferenceA2B(gan_img)
+        gan_img = self.to_image(self.fake_B)
+        
+        return (gan_img - np.min(gan_img)) / (np.max(gan_img) - np.min(gan_img))

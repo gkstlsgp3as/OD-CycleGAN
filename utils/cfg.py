@@ -18,7 +18,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 Cfg = EasyDict()
 
-Cfg.skip = 0.5
+Cfg.skip = 0.2
 Cfg.use_darknet_cfg = False
 Cfg.cfgfile = os.path.join(_BASE_DIR, 'cfg', 'yolov4-custom.cfg')
 Cfg.outepsg = 4326
@@ -83,11 +83,11 @@ Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
 
 Cfg.iou_type = 'ciou'  # 'iou', 'giou', 'diou', 'ciou', 'gaussian'
-Cfg.img_mode = 'vv+vh' #  'grayscale', 'vv^2+vh^2', 'vv*vh' or 'org'
+Cfg.img_mode = 'vv*vh' #  'grayscale', 'vv^2+vh^2', 'vv*vh' or 'org'
 # Additional Input information and variables
 # Name of each image: S1, CSK, K5, ICEYE
 # Number of satellite image band: 1 or 3
-Cfg.input_ch = 6
+Cfg.input_ch = 3
 Cfg.Satellite = 'S1'
 Cfg.Satelliteband = 3
 Cfg.division = 40 # K5: 10, S1: 15, 20 15

@@ -302,6 +302,46 @@ class ModelEMA:
         # Update EMA attributes
         copy_attr(self.ema, model, include, exclude)
 
+def adjust_state_dict(state_dict, model):
+    from collections import OrderedDict
+    import copy
+    model_rev = copy.deepcopy(model) 
+    state_dict_rev = model_rev.state_dict()
+    for k, v in state_dict.items():
+        ind = k.split('.')[1]
+        if int(ind) == 0:
+            state_dict_rev[k] = state_dict[k]
+        elif int(ind) == 1:
+            state_dict_rev[k] = state_dict[k]
+            k2 = k.replace(ind, str(int(ind)+1))
+            state_dict_rev[k2] = state_dict[k]
+        elif int(ind) < 12:
+            k1 = k.replace(ind, str(int(ind)+3))
+            state_dict_rev[k1] = state_dict[k]
+            k2 = k.replace(ind, str(int(ind)+14))
+            state_dict_rev[k2] = state_dict[k]
+        elif int(ind) < 25:
+            k1 = k.replace(ind, str(int(ind)+16))
+            state_dict_rev[k1] = state_dict[k]
+            k2 = k.replace(ind, str(int(ind)+29))
+            state_dict_rev[k2] = state_dict[k]
+        elif int(ind) < 37:
+            k1 = k.replace(ind, str(int(ind)+31))
+            state_dict_rev[k1] = state_dict[k]
+            k2 = k.replace(ind, str(int(ind)+44))
+            state_dict_rev[k2] = state_dict[k]
+        elif int(ind) == 83:
+            continue
+        else:
+            k1 = k.replace(ind, str(int(ind)+46))
+            state_dict_rev[k1] = state_dict[k]
+    
+    return OrderedDict(state_dict_rev)
+
+def modify_optimizer_state_dict(ckpt, optimizer):
+    # p0: batchnorm, p1: weight, p2: bias
+    
+    return ckpt
 
 class BatchNormXd(torch.nn.modules.batchnorm._BatchNorm):
     def _check_input_dim(self, input):
