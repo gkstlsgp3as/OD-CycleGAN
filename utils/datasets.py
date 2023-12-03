@@ -1176,9 +1176,8 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         img = np.ascontiguousarray(img)
         gan_img = gan_img.transpose((2, 0, 1))[::-1]  # BGR to RGB, to 3x416x416
         gan_img = np.ascontiguousarray(gan_img)
-        gan_img = gan_img*0.5 + img*0.5
 
-        img_all = np.concatenate((img, gan_img), axis=0)
+        img_all = np.concatenate((img, img, gan_img), axis=0)
 
         return torch.from_numpy(img_all), labels_out, self.img_files[index], shapes
 
