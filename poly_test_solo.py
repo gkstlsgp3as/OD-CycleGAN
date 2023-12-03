@@ -384,6 +384,7 @@ def test(data,
         wandb_logger.log({"Bounding Box Debugger/Images": wandb_images})
 
     # Save JSON
+    breakpoint()
     if save_json and len(jdict):
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         anno_json = './coco/annotations/instances_val2017.json'  # annotations json

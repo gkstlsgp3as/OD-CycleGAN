@@ -111,7 +111,7 @@ class Split(nn.Module):
 			x1 = x2 = x[:, :3, :, :]
 		else:
 			x1 = x[:, :3, :, :]; x2 = x[:, 3:, :, :]
-		x1 = self.act(self.bn(self.conv(x1))); x2 = self.act(self.bn(self.conv(x2)))
+		x1 = self.act(self.bn(self.conv(x1))); x2 = self.act(self.bn(self.conv2(x2)))
 		return x1, x2
 
 	def fuseforward(self, x):

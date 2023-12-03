@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import poly_test_solo  # import test.py to get mAP after each epoch
+import poly_test  # import test.py to get mAP after each epoch
 import test
 from models.experimental import attempt_load
 from models.yolo_arch2 import Model, Polygon_Model
@@ -428,6 +428,7 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
             #i, (imgs, targets, paths, _) = next(iter(pbar))
             ni = i + nb * epoch  # number integrated batches (since train start)
             #imgs = edges ## please notice this 
+            
             if opt.fusion == 'early':
                 #img = imgs[:, :3, :, :]
                 imgs = imgs[:, 3:, :, :] # gan
