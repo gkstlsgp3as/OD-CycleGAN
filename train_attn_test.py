@@ -518,10 +518,10 @@ def train(hyp, opt, device, tb_writer=None, polygon=False):
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
         scheduler.step()
-        if (epoch+1) % 10 != 0:
+        if (epoch+1) % 1 != 0:
             continue
         
-        Test = poly_test if polygon else test
+        Test = poly_test_solo if polygon else test
         # DDP process 0 or single-GPU
         if rank in [-1, 0]:
             # mAP

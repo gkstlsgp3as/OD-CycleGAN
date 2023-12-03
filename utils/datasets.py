@@ -1198,7 +1198,7 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        gan_img = img#self.gan_imgs[index] # self.gan_infer(img)#
+        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img4
         if i == 0:  # top left

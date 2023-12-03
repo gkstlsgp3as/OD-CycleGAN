@@ -2634,7 +2634,7 @@ if __name__ == '__main__':
     import numpy as np 
     import argparse
 
-    from models.yolo import Model, Polygon_Model
+    from models.yolo_arch2 import Model, Polygon_Model
     from utils.general import check_file, set_logging
     from utils.torch_utils import select_device
     

@@ -22,7 +22,7 @@ import yaml
 import easydict
 
 from utils.general import check_file, non_max_suppression, polygon_non_max_suppression
-from models.yolo import Model
+from models.yolo_arch2 import Model
 from utils.torch_utils import intersect_dicts, TracedModel
 from models.experimental import attempt_load
 from utils.datasets import letterbox

@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 import poly_test  # import test.py to get mAP after each epoch
 from models.experimental import attempt_load
-from models.yolo import Model, Polygon_Model
+from models.yolo_arch2 import Model, Polygon_Model
 from utils.autoanchor import check_anchors, polygon_check_anchors
 from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \

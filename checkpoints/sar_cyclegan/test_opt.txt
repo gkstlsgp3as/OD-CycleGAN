@@ -2,10 +2,10 @@
                      adam: True                          	[default: False]
            artifact_alias: latest                        
              aspect_ratio: 1.0                           
-               batch_size: 16                            	[default: 1]
+               batch_size: 8                             	[default: 1]
             bbox_interval: -1                            
                    bucket:                               
-             cache_images: True                          	[default: False]
+             cache_images: False                         
                       cfg: poly_yolov8_attn_sam.yaml     	[default: yolov7.yaml]
           checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan/	[default: ./checkpoints]
                 crop_size: 640                           

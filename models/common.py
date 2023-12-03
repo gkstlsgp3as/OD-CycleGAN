@@ -102,7 +102,7 @@ class Split(nn.Module):
 	def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):  # ch_in, ch_out, kernel, stride, padding, groups
 		super(Split, self).__init__()
 		self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
-		self.conv2 = nn.Conv2d(c1*2, c2, k, s, autopad(k, p), groups=g, bias=False)
+		#self.conv2 = nn.Conv2d(c1*2, c2, k, s, autopad(k, p), groups=g, bias=False)
 		self.bn = nn.BatchNorm2d(c2)
 		self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
@@ -111,7 +111,7 @@ class Split(nn.Module):
 			x1 = x2 = x[:, :3, :, :]
 		else:
 			x1 = x[:, :3, :, :]; x2 = x[:, 3:, :, :]
-		x1 = self.act(self.bn(self.conv(x1))); x2 = self.act(self.bn(self.conv2(x2)))
+		x1 = self.act(self.bn(self.conv(x1))); x2 = self.act(self.bn(self.conv(x2)))
 		return x1, x2
 
 	def fuseforward(self, x):
@@ -119,7 +119,7 @@ class Split(nn.Module):
 			x1 = x2 = x[:, :3, :, :]
 		else:
 			x1 = x[:, :3, :, :]; x2 = x[:, 3:, :, :]
-		x1 = self.act(self.conv(x1)); x2 = self.act(self.conv2(x2))
+		x1 = self.act(self.conv(x1)); x2 = self.act(self.conv(x2))
 		return x1, x2
 
 class Conv2(nn.Module):

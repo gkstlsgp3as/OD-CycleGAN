@@ -299,7 +299,9 @@ def test(data,
                     # [{"image_id": 42, "category_id": 18, "polygon_box": [x1, y1, x2, y2, x3, y3, x4, y4], "score": 0.236}, ...
                     image_id = int(path.stem) if path.stem.isnumeric() else path.stem
                     box = predn[:, :8]  # xyxyxyxy
-                    for p, b in zip(pred.tolist(), box.tolist()):
+                    pred_coco = np.array(pred.clone())
+                    box_coco = np.array(box.clone())
+                    for p, b in zip(pred_coco.tolist(), box_coco.tolist()):
                         jdict.append({'image_id': image_id,
                                       'category_id': coco91class[int(p[9])] if is_coco else int(p[9]),
                                       'polygon_box': [round(x, 3) for x in b],
@@ -387,7 +389,7 @@ def test(data,
     breakpoint()
     if save_json and len(jdict):
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
-        anno_json = './coco/annotations/instances_val2017.json'  # annotations json
+        anno_json = './data/sentinel_annotations.json'  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
         print('josn,,,,,,,,,',pred_json)
         print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
