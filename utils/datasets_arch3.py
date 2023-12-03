@@ -60,7 +60,7 @@ def exif_size(img):
     return s
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', polygon=False, gan_model=None, task=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', polygon=False, gan_model=None):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         LoadModels = LoadImagesAndLabels if not polygon else Polygon_LoadImagesAndLabels
@@ -75,8 +75,7 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       image_weights=image_weights,
                                       prefix=prefix,
                                       yaml_file=path.split('/')[3]+'.yaml', 
-                                      gan_model=gan_model,
-                                      task=task)
+                                      gan_model=gan_model)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -264,7 +263,7 @@ class LoadSAR:
         #input_band = input_band.transpose(2, 0, 1) 
         #rgb_band = cv2.cvtColor(rgb_band, cv2.COLOR_BGR2RGB)
 
-        div_img_list, div_coord = division_testset(input_band=input_band, img_size=self.img_size, gan_model=gan_model)
+        div_img_list, div_coord = division_testset(input_band=input_band, img_size=self.img_size, gan_model=self.gan_model)
         
         return path, input_band, div_img_list, div_coord, input_band.shape, projection, geotransform
         
@@ -836,7 +835,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         Polygon_LoadImagesAndLabels for polygon boxes
     """
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', yaml_file = 'sentinel.yaml', gan_model=None, task=''):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', yaml_file = 'sentinel.yaml', gan_model=None):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -847,7 +846,6 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         self.stride = stride
         self.path = path
         self.gan_model = gan_model
-        self.task = task
         
         import yaml
         with open('./data/{}'.format(yaml_file), errors='ignore') as f:
@@ -947,6 +945,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
         self.gan_imgs = [None] * n
+        
         if cache_images:
             gb = 0  # Gigabytes of cached images
             self.img_hw0, self.img_hw = [None] * n, [None] * n
@@ -958,10 +957,10 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                 self.gan_imgs[i] = np.array(self.gan_infer(img), np.float16)
                 self.imgs[i] = np.array(img, np.float16)
                 
-                gb += self.gan_imgs[i].nbytes
+                gb += self.imgs[i].nbytes
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
-
+        
     '''
     im = util.tensor2im(im)
     gan_out = gan_model.to_image(im) # 640, 640, 3
@@ -1107,18 +1106,6 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
                 r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
                 img = (img * r + img2 * (1 - r)).astype(img.dtype) # original: np.uint8
                 labels = np.concatenate((labels, labels2), 0)
-        elif self.task=='valid':
-            img, (h0, w0), (h, w) = load_image(self, index)
-            gan_img = self.gan_model.gan_infer(img) # self.gan_infer(img)#
-            # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-            gan_img, _, _ = letterbox(gan_img, shape, auto=False, scaleup=self.augment)
-            shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
-            labels = self.labels[index].copy() 
-            if labels.size:  # normalized format to pixel xyxyxyxy format
-                labels[:, 1:] = xyxyxyxyn2xyxyxyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
-
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
@@ -1163,7 +1150,7 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
             # flip left-right for all x
             #if random.random() < hyp['fliplr']:
             #    img = np.fliplr(img)
-            #    gan_img = np.fliplr(gan_img)
+            #    gan_img = np.flipud(gan_img)
             #    if nL:
             #        labels[:, 1::2] = 1 - labels[:, 1::2]
         # original label shape is (nL, 9), add one column for target image index for build_targets()
@@ -1176,7 +1163,6 @@ class Polygon_LoadImagesAndLabels(Dataset):  # for training/testing
         img = np.ascontiguousarray(img)
         gan_img = gan_img.transpose((2, 0, 1))[::-1]  # BGR to RGB, to 3x416x416
         gan_img = np.ascontiguousarray(gan_img)
-        gan_img = gan_img*0.5 + img*0.5
 
         img_all = np.concatenate((img, gan_img), axis=0)
 
@@ -1199,7 +1185,7 @@ def polygon_load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        gan_img = img#self.gan_imgs[index] # self.gan_infer(img)#
+        gan_img = self.gan_imgs[index] # self.gan_infer(img)#
 
         # place img in img4
         if i == 0:  # top left
@@ -1380,23 +1366,16 @@ def load_image(self, index):
                              interpolation=cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR)
         if Cfg.img_mode != 'org':
             if Cfg.img_mode == 'vv+vh':
-                newimg = img[...,0]+img[...,1]
+                newimg = img[...,1]+img[...,2]
             elif Cfg.img_mode == 'grayscale':
                 newimg = 0.229*img[...,0]+0.587*img[...,1]+0.114*img[...,2]
             elif Cfg.img_mode == 'vv^2+vh^2':
-                newimg = img[...,0]**2 +img[...,1]**2
+                newimg = img[...,1]**2 +img[...,2]**2
             elif Cfg.img_mode == 'vv*vh':
-                newimg = img[...,0]*img[...,1]
-            else:
-                if Cfg.img_mode == 'vhvhvv':
-                    img = np.dstack((img[...,0], img[...,0], img[...,1]))
-                elif Cfg.img_mode == 'vhv2h2':
-                    img = np.dstack((img[...,0],img[...,0]**2+img[...,1]**2),img[...,0]**2+img[...,1]**2)
-                else:
-                    img = np.dstack((newimg, newimg, newimg))
+                newimg = img[...,1]*img[...,2]
+            img = np.dstack((newimg, newimg, newimg))
             if img.max() != 0:
                 img = (img - img.min()) / (img.max() - img.min())
-                #img = cv2.normalize(img, None, 0.5, 1.0,cv2.NORM_MINMAX, dtype=cv2.CV_32F)
                 
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:

@@ -6,6 +6,7 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
+import easydict
 
 from models.experimental import attempt_load
 from utils.datasets import LoadImages, LoadSAR
@@ -15,6 +16,7 @@ from utils.general import check_img_size, check_requirements, check_imshow, appl
 from utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
 
 from utils.plots import Annotator, set_colors
+from models.gan import create_model
 
 @torch.no_grad()
 def detect(weights='yolov7.pt',  # model.pt path(s)
@@ -44,29 +46,69 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
            polygon=False,
            proj='4326'
            ):
-    save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
+    
+    # Load GAN model
+    opt_gan = easydict.EasyDict({
+        'model': 'cycle_gan',
+        'dataset_mode': 'aligned',
+        'input_nc': 3,
+        'output_nc': 3, 
+        'no_dropout': True,
+        'ngf': 64, 
+        'ndf': 64, 
+        'netD': 'basic',
+        'netG': 'resnet_9blocks',
+        'n_layers_D': 3,
+        'norm': 'instance',
+        'init_type': 'normal',
+        'direction': 'AtoB',
+        'isTrain': False,
+        'device': device,
+        'checkpoints_dir': '/data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan/',
+        'exp_name': 'sar',
+        'preprocess': 'resize_and_crop',
+        'init_gain': 0.02,
+        'load_iter': 0,
+        'epoch': 'latest',
+        'verbose': False
+    })
+    save_img = not nosave and not source.endswith('.txt')  # save inference images
     trace = not no_trace
 
     # Directories
     #save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
-    save_dir = Path(opt.project, exist_ok=opt.exist_ok)  # define the project
+    save_dir = Path(project, exist_ok=exist_ok)  # define the project
     (save_dir).mkdir(parents=True, exist_ok=True)  # make dir
     #(save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Initialize
     set_logging()
-    device = select_device(opt.device)
+    device = select_device(device)
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
     model = attempt_load(weights, map_location=device)  # load FP32 model
+
+    
+    # setup GPU for gan_model
+    str_ids = opt_gan.device.split(',')
+    opt_gan.lst_ids = []
+    for str_id in str_ids:
+        id = int(str_id)
+        if id >= 0:
+            opt_gan.lst_ids.append(id)
+    #if len(opt_gan.lst_ids) > 0:
+    #    torch.cuda.set_device(opt_gan.lst_ids[0])
+    opt_gan.device = device#torch.device('cuda:{}'.format(opt.lst_ids[0])) if opt.lst_ids else torch.device('cpu') 
+    gan_model = create_model(opt_gan)    
+    gan_model.setup(opt_gan)
     stride = int(model.stride.max())  # model stride
     img_size = check_img_size(img_size, s=stride)  # check img_size
     if img_size == -1:
         quit()
 
     if trace:
-        model = TracedModel(model, device, opt.img_size)
+        model = TracedModel(model, device, img_size)
         # https://happy-jihye.github.io/dl/torch-2/
 
     if half:
@@ -84,13 +126,13 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
     image_ext = np.unique(np.array([x.split('.')[-1].lower() for x in files if x.split('.')[-1].lower() in img_formats]))
 
     if image_ext in ['tif', 'tiff']:
-        dataset = LoadSAR(source, img_size=img_size, stride=stride, save_dir=save_dir)
+        dataset = LoadSAR(source, img_size=img_size, stride=stride, save_dir=save_dir, gan_model=gan_model)
     elif image_ext in ['jpg', 'jpeg', 'png']:
         dataset = LoadImages(source, img_size=img_size, stride=stride)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
-    colors = set_colors(names, target=opt.name.split('_')[0])
+    colors = set_colors(names, target=name.split('_')[0])
 
     # Run inference
     if device.type != 'cpu':
@@ -118,8 +160,8 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
         # 테스트 이미지를 1/div_num 만큼 width, height를 분할하고, 크롭된 이미지와 위치좌표를 반환
         p = Path(path)
         
-        with open(save_dir / (p.stem + '_' + opt.name + '.txt'), 'w') as f:
-            if opt.polygon:
+        with open(save_dir / (p.stem + '_' + name + '.txt'), 'w') as f:
+            if polygon:
                 f.write('ImageName,Lon,Lat,Class,Size,X1,Y1,X2,Y2,X3,Y3,X4,Y4\n')
             else:
                 f.write('ImageName,Lon,Lat,Class,Size,X,Y,W,H\n')
@@ -150,11 +192,11 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                 old_img_h = img.shape[2]
                 old_img_w = img.shape[3]
                 for i in range(3):
-                    model(img, augment=opt.augment)[0]
+                    model(img, augment=augment)[0]
             # Inference
             t1 = time_synchronized()
             #with torch.no_grad():   # Calculating gradients would cause a GPU memory leak
-            pred = model(img, augment=opt.augment)[0]
+            pred = model(img, augment=augment)[0]
             t2 = time_synchronized()
             
             pred[:,:,:8:2] = pred[:,:,:8:2] + div_coord[d_id][2]
@@ -164,7 +206,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
         
         # Apply NMS
         max_det = 1000
-        tot_det = NonMax(tot_det, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms, max_det=max_det)
+        tot_det = NonMax(tot_det, conf_thres, iou_thres, classes=classes, agnostic=agnostic_nms, max_det=max_det)
         t3 = time_synchronized()    
         
         # Process detections
@@ -193,26 +235,26 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                         lon = ca * (x1+x2)/2 + cb * (y1+y2)/2 + xoff
                         lat = cd * (x2+x2)/2 + ce * (y1+y2)/2 + yoff
                     
-                        if (dataset.epsg != opt.proj): 
+                        if (dataset.epsg != proj): 
                             # when the input coordinate system is different to dst coordinate system
                             dataset.point.AddPoint(float(lon), float(lat))
-                            if opt.proj != Cfg.outepsg: # if proj argument is different from cfg 
-                                dataset.coordTransform = dataset.change_projection(int(opt.proj))
+                            if proj != Cfg.outepsg: # if proj argument is different from cfg 
+                                dataset.coordTransform = dataset.change_projection(int(proj))
                             dataset.point.Transform(dataset.coordTransform) # 3857 to 4326
                             
                             lat = dataset.point.GetX() # pop x
                             lon = dataset.point.GetY() # pop y
                     
-                    with open(save_dir / (p.stem + '_' + opt.name + '.txt'), 'a') as f:
-                        if opt.polygon:
+                    with open(save_dir / (p.stem + '_' + name + '.txt'), 'a') as f:
+                        if polygon:
                             if not SLC:
-                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
-                                    else (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy)
+                                line = (str(Path(path).name.replace('.tif', '_' + name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
+                                    else (str(Path(path).name.replace('.tif', '_' + name + '.tif')), lon, lat, cls, Cfg.size, *xyxyxyxy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + '%d,'*2 % line[3:5] + \
                                         '%.14g,'*(len(line)-5) % line[5:])[:-1]+'\n')
                             else:
-                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
-                                    else (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *xyxyxyxy)     
+                                line = (str(Path(path).name.replace('.tif', '_' + name + '.tif')), cls, Cfg.size, *xyxyxyxy, conf) if save_conf \
+                                    else (str(Path(path).name.replace('.tif', '_' + name + '.tif')), cls, Cfg.size, *xyxyxyxy)     
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + \
                                         '%.14g,'*(len(line)-3) % line[3:])[:-1]+'\n')                               
                             
@@ -220,12 +262,12 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                             coord_xy = [x1, y1, x2-x1, y2-y1]
                             if not SLC:
                                 
-                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), lon, lat, cls, Cfg.size, *coord_xy, conf) if save_conf \
+                                line = (str(Path(path).name.replace('.tif', '_' + name + '.tif')), lon, lat, cls, Cfg.size, *coord_xy, conf) if save_conf \
                                     else (path.split('/')[-1][:-4], lon, lat, cls, Cfg.size, *coord_xy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + '%d,'*2 % line[3:5] + \
                                         '%.14g,'*(len(line)-5) % line[5:])[:-1]+'\n')
                             else:
-                                line = (str(Path(path).name.replace('.tif', '_' + opt.name + '.tif')), cls, Cfg.size, *coord_xy, conf) if save_conf \
+                                line = (str(Path(path).name.replace('.tif', '_' + name + '.tif')), cls, Cfg.size, *coord_xy, conf) if save_conf \
                                     else (path.split('/')[-1][:-4], cls, Cfg.size, *coord_xy)
                                 f.write(('%s,' % line[0] + '%.14g,'*2 % line[1:3] + \
                                         '%.14g,'*(len(line)-3) % line[3:])[:-1]+'\n')
@@ -235,7 +277,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
                     #    
                         label = None if hide_labels else (names[int(cls)] if hide_conf else f'{names[int(cls)]} {conf:.2f}')
                         
-                        if opt.polygon:
+                        if polygon:
                             xyxyxyxy = [int(el) for el in xyxyxyxy]
                             polygon_plot_one_box(xyxyxyxy, b1_image, label=label, color=colors[int(cls)], line_thickness=1)
                             # plot bboxes only on band1
@@ -257,7 +299,7 @@ def detect(weights='yolov7.pt',  # model.pt path(s)
             #from tifffile import imwrite
 
             
-            save_path = str(save_dir / Path(path).name.replace('.tif', '_' + opt.name + '.tif'))
+            save_path = str(save_dir / Path(path).name.replace('.tif', '_' + name + '.tif'))
             print(f" The image with the result is saved in: {save_path}")
             
             b1_image = np.array(b1_image, dtype=np.uint8)

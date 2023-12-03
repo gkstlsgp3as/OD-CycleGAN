@@ -233,7 +233,14 @@ class CycleGANModel(BaseModel):
         trans = util.getTransforms()
 
         gan_img = trans(img); gan_img = torch.unsqueeze(gan_img, 0)
-        self.inferenceA2B(gan_img)
+        torch.cuda.synchronize()
+        print(f"GPU memory before inferenceA2B: {torch.cuda.memory_allocated() / 1e9} GB")
+        try:
+            self.inferenceA2B(gan_img)
+        except:
+            breakpoint()
+        torch.cuda.synchronize()
+        print(f"GPU memory after inferenceA2B: {torch.cuda.memory_allocated() / 1e9} GB")
         gan_img = self.to_image(self.fake_B)
         
         return (gan_img - np.min(gan_img)) / (np.max(gan_img) - np.min(gan_img))

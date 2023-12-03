@@ -115,14 +115,12 @@ class BaseOptions():
         # save to the disk
         opt.save_dir = Path(increment_path((opt.project+'/'+opt.name), exist_ok=opt.exist_ok | opt.evolve)+
                             f'_batch{opt.batch_size}_epoch{opt.epochs}_subset{opt.subset}_{opt.mode}_smoothing{opt.label_smoothing}_multiscale{opt.multi_scale}')  # increment run
-        
         #opt.checkpoints_dir = opt.save_dir/'checkpoints'
         util.mkdirs(opt.checkpoints_dir)
         file_name = os.path.join(opt.checkpoints_dir, '{}_opt.txt'.format(opt.phase))
         with open(file_name, 'wt') as opt_file:
             opt_file.write(message)
             opt_file.write('\n')
-
     def parse(self):
         """Parse our options, create checkpoints directory suffix, and set up gpu device."""
         opt = self.gather_options()
@@ -146,6 +144,6 @@ class BaseOptions():
         
         if len(opt.lst_ids) > 0:
             torch.cuda.set_device(opt.lst_ids[0])
-        
         self.opt = opt
         return self.opt
+

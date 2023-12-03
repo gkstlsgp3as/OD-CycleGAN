@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from models.yolo import Model
+from models.yolo_arch2 import Model
 from utils.general import check_requirements, set_logging
 from utils.google_utils import attempt_download
 from utils.torch_utils import select_device

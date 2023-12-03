@@ -2,15 +2,15 @@
                      adam: True                          	[default: False]
            artifact_alias: latest                        
              aspect_ratio: 1.0                           
-               batch_size: 8                             	[default: 1]
+               batch_size: 16                            	[default: 1]
             bbox_interval: -1                            
                    bucket:                               
-             cache_images: True                          	[default: False]
+             cache_images: False                         
                       cfg: poly_yolov8_attn_sam.yaml     	[default: yolov7.yaml]
-          checkpoints_dir: /data/BRIDGE/OD-CycleGAN/checkpoints/sar_cyclegan/	[default: ./checkpoints]
+          checkpoints_dir: /mnt/BRIDGE/OD-CycleGAN/checkpoints/	[default: ./checkpoints]
                 crop_size: 640                           
                 data_file: sentinel.yaml                 	[default: data/sentinel.yaml]
-                 dataroot: ./data/images/sentinel/sar    	[default: None]
+                 dataroot: ./data/images/sentinel/gan    	[default: None]
              dataset_mode: aligned                       	[default: unaligned]
                 direction: AtoB                          
           display_winsize: 256                           
@@ -63,7 +63,7 @@
                      quad: False                         
                      rect: False                         
               results_dir: ./results/                    
-                   resume: False                         
+                   resume: runs/train/exp432_batch16_epoch300_subset_sar_smoothing0.1_multiscaleFalse/weights/best.pt	[default: False]
               save_period: -1                            
            serial_batches: False                         
                  shp_path: ./data/landmask/              

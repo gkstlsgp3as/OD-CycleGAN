@@ -636,7 +636,8 @@ def division_set(image_list, origin_image_folder, div_set, datatype='sentinel', 
                         os.remove(os.path.join(save_txt_path, save_name.replace("tif","txt")))
 
 
-def division_testset(input_band=None, img_size=640):
+def division_testset(input_band=None, img_size=640, gan_model=None):
+    from utils.cfg import Cfg
     img_list, div_coord = [], []
     
     # 분할 구간 설정
@@ -654,8 +655,25 @@ def division_testset(input_band=None, img_size=640):
 
             dw = x2-x1; dh = y2-y1
             # Crop
-            crop = input_band[y1:y2, x1:x2]
-            img_list.append(crop)
+            img = input_band[y1:y2, x1:x2]
+
+            if Cfg.img_mode != 'org':
+                if Cfg.img_mode == 'vv+vh':
+                    newimg = img[...,1]+img[...,2]
+                elif Cfg.img_mode == 'grayscale':
+                    newimg = 0.229*img[...,0]+0.587*img[...,1]+0.114*img[...,2]
+                elif Cfg.img_mode == 'vv^2+vh^2':
+                    newimg = img[...,1]**2 +img[...,2]**2
+                elif Cfg.img_mode == 'vv*vh':
+                    newimg = img[...,1]*img[...,2]
+                img = np.dstack((newimg, newimg, newimg))
+                if img.max() != 0:
+                    img = (img - img.min()) / (img.max() - img.min())
+
+            gan = gan_model.gan_infer(img)
+            img = np.concatenate((img, gan), axis=0)
+
+            img_list.append(img)
             div_coord.append([dw, dh, div_w, div_h])
 
             save_name = str(x1) + '_' + str(y1) + '_' + str(x2) + '_' + str(y2) + '_' + 'test.tif'
