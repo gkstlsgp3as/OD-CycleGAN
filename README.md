@@ -5,8 +5,8 @@
 ---
 Bridge detection from Synthetic Aperture Radar (SAR) is of great significance for infrastructure management, disaster prevention, and navigation automation. Although high-resolution SAR is increasingly accessible, exploiting Sentinel-1 remains advantageous due to its global coverage and accessibility. However, low spatial resolution of 20 m in Sentinel-1 products poses challenges in detecting small and indistinct bridges. To enhance bridge detection in low-resolution Sentinel-1 imagery, we propose a novel architecture that incorporates CycleGAN as an edge detector. CycleGAN generates detailed boundaries using 5 m land use maps, with enhanced bridge saliency. Since bridges often connect distinct edges like riverbanks and roads, this edge information assists Poly-YOLOv8, our chosen detector, in accurately localizing bridges. Our approach then integrates edge information through feature fusion module and feature alignment loss. Accordingly, the proposed SAR-EdgeYOLO achieves a precision of 98.2%, recall of 91.7%, and mAP of 94.8% at IoU 0.5, marking improvements of 3.9, 3.8, and 3.1 percentage points respectively over the baseline. The results demonstrate that CycleGAN-aided edge extraction effectively addresses the limitations of low-resolution remote sensing data, improving bridge detection accuracy and multi-class localization. This research can further contribute to the advancement of time-series infrastructure monitoring with wide applicability and higher accuracy.
 
-<img src = "https://github.com/user-attachments/assets/61d9c557-e2de-4f2e-b230-9f1d49f051cb" width="80%" height="80%">
-<img src = "https://github.com/user-attachments/assets/61d9c557-e2de-4f2e-b230-9f1d49f051cb" width="80%" height="80%">
+<img src = "https://github.com/user-attachments/assets/61d9c557-e2de-4f2e-b230-9f1d49f051cb" width="80%" height="80%" img align="center">
+<img src = "https://github.com/user-attachments/assets/97c00a05-ccb5-4bb7-ae24-e388aa37eebf" width="80%" height="80%" img align="center">
 
 ## Requirements
 * Python 3.9.19, Pytorch 1.11.0+cu113
@@ -22,7 +22,7 @@ pip install -r requirements_4dsr.txt
 
 ### :point_right: Results
 The aerial and Sentinel-1 images along with the detection results of challenging cases. Red boxes indicate train bridges, and green boxes specify vehicle bridges. 
-<img src = "https://github.com/user-attachments/assets/b882449a-f320-481f-b561-123d39ff9c21" width="60%" height="60%">
+<img src = "https://github.com/user-attachments/assets/b882449a-f320-481f-b561-123d39ff9c21" width="60%" height="60%"  img align="center">
 
 ### :airplane: Training
 ```
