@@ -1,4 +1,4 @@
-# 4D Imaging Radar Super-Resolution via Stereo-Camera-Guided Diffusion Models (4D Imaging Radar Bootcamp, Grand Award) 
+# SAR-EdgeYOLO: Robust Bridge Detection in Low-Resolution SAR via Edge Enhancement (IEEE Access)
 
 [Shinhye Han](https://gkstlsgp3as.github.io/), [Juyoung Song](https://www.researchgate.net/profile/Juyoung-Song-3), Hwisong Kim, Duk-jin Kim
 
